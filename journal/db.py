@@ -147,6 +147,11 @@ class Journal:
                                  (symbol,)).fetchone()
             return c.execute("SELECT * FROM alerts WHERE sent=1 ORDER BY id DESC LIMIT 1").fetchone()
 
+    def get_alert(self, alert_id: int):
+        """Ambil satu alert by id — dipakai tombol Telegram (aksi kena alert SPESIFIK, bukan 'terakhir')."""
+        with self._c() as c:
+            return c.execute("SELECT * FROM alerts WHERE id=?", (int(alert_id),)).fetchone()
+
     # ── config key-value (heartbeat, offset telegram, dsb) ──
     def cfg_set(self, key: str, value: str):
         with self._c() as c:

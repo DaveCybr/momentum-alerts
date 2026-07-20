@@ -66,7 +66,6 @@ def realized_outcome(deals: list[dict]) -> tuple[str, float, float]:
 def reconcile_executed(journal: Journal, cfg: dict) -> int:
     """Alert DIEKSEKUSI (punya ticket) yg posisinya sudah tutup di broker → catat outcome RIIL
     (WIN/LOSS/BE + PnL realized) dari history deal. Return jumlah direkonsiliasi."""
-    from rpyc.utils.classic import obtain
     from data import sources
     rows = journal.open_executed()
     if not rows:
@@ -76,10 +75,12 @@ def reconcile_executed(journal: Journal, cfg: dict) -> int:
         m = sources._connect(cfg["data"]["mt5"])
         for a in rows:
             tk = int(a["ticket"])
-            pos = obtain(m.positions_get(ticket=tk))
+            # JANGAN obtain(): TradePosition/TradeDeal tak bisa di-pickle server wine-python
+            # (sama seperti tick — akses atribut netref langsung, lihat data/sources.py).
+            pos = m.positions_get(ticket=tk)
             if pos is None or len(pos) > 0:               # None=error, >0=masih terbuka → JANGAN finalisasi
                 continue
-            raw = obtain(m.history_deals_get(position=tk))
+            raw = m.history_deals_get(position=tk)
             deals = [{"profit": float(d.profit), "swap": float(d.swap),
                       "commission": float(d.commission), "price": float(d.price),
                       "time": int(d.time), "entry": int(d.entry)} for d in (raw or [])]

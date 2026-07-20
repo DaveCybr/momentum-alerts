@@ -49,10 +49,13 @@ def run_scan(cfg: dict, journal: Journal | None, strat, *, dry: bool = False):
         if dry:
             continue
         if journal:
-            journal.record(setup, candle_id, strat.name, strat.version,
-                           sent=send, suppress=None if send else why, ts=wib_str(now))
-        if send:
-            telegram.send(telegram.format_alert(setup, now), cfg["delivery"]["telegram"])
+            aid = journal.record(setup, candle_id, strat.name, strat.version,
+                                 sent=send, suppress=None if send else why, ts=wib_str(now))
+            if send:
+                mid = telegram.send(telegram.format_alert(setup, now), cfg["delivery"]["telegram"],
+                                    reply_markup=telegram.alert_keyboard(aid))
+                if mid:
+                    journal.cfg_set(f"msg_{aid}", str(mid))   # simpan message_id (jejak, bisa dipakai nanti)
 
 
 def main():
