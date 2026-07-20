@@ -131,10 +131,34 @@ def next_trail_sl(is_buy: bool, cur_sl: float, extreme: float, atr: float,
     return raw if raw < cur_sl else None          # turun doang
 
 
-def manage_positions(cfg: dict):
-    """Trailing chandelier per posisi (magic kita): order tanpa TP keras → runner bebas jalan,
-    exit lewat SL yang ratchet = extreme_sejak_entry ∓ mult×ATR. Sekali, saat trail pertama
-    mengunci SL ≥ BE: bank separuh. Posisi baru dibiarkan (initial ATR-stop kasih ruang)."""
+def trail_after_1r(is_buy: bool, entry: float, initial_sl: float, cur_sl: float,
+                   extreme: float, atr: float, mult: float, price: float,
+                   min_dist: float, activate_r: float = 1.0) -> float | None:
+    """Trailing DENGAN grace-period. SL diam di initial sampai profit ≥ activate_r×R,
+    baru SL loncat ke MINIMAL breakeven lalu ratchet chandelier ngunci profit.
+    Cegah whipsaw di zona rugi: sebelum trade 'buktikan diri' (1R), SL nggak didekatin.
+      R = |entry − initial_sl|. reached = extreme sudah bergerak ≥ activate_r×R ke arah profit.
+    Return SL baru, atau None (jangan modify)."""
+    R = abs(entry - initial_sl)
+    if R <= 0:
+        return None
+    moved = (extreme - entry) if is_buy else (entry - extreme)   # profit terjauh sejak entry
+    if moved < activate_r * R:
+        return None                              # grace-period: biarkan SL initial (lebar)
+    raw = chandelier(is_buy, extreme, atr, mult)
+    if is_buy:
+        raw = max(raw, entry)                    # minimal BE (jangan di bawah entry)
+        raw = min(raw, price - min_dist)         # clamp broker
+        return raw if raw > cur_sl else None     # ratchet naik
+    raw = min(raw, entry)                        # SELL: minimal BE (jangan di atas entry)
+    raw = max(raw, price + min_dist)             # clamp broker
+    return raw if raw < cur_sl else None         # ratchet turun
+
+
+def manage_positions(cfg: dict, journal: Journal | None = None):
+    """Trailing chandelier per posisi (magic kita): order tanpa TP keras → runner bebas jalan.
+    Grace-period: SL diam di initial sampai profit ≥ activate_r×R, baru loncat ke BE lalu
+    ratchet ngunci profit. Saat lock pertama ke BE: bank separuh. Butuh `journal` utk initial SL."""
     import pandas as pd
     from data import sources
     from engine import indicators as ind
@@ -146,6 +170,7 @@ def manage_positions(cfg: dict):
     tf = tr.get("tf", "M30"); ap = int(tr.get("atr_period", 14))
     mult = float(tr.get("atr_mult", 3.0)); count = int(tr.get("count", 200))
     do_partial = bool(tr.get("partial_on_lock", True))
+    activate_r = float(tr.get("activate_r", 1.0))            # trail mulai setelah profit ≥ activate_r×R
     with sources.MT5_LOCK:                                    # serialisasi akses MT5 (RLock reentrant)
         m = sources._connect(cfg["data"]["mt5"])
         for sym in cfg["instruments"]:
@@ -173,7 +198,10 @@ def manage_positions(cfg: dict):
                 extreme = float(win["high"].max() if is_buy else win["low"].min())
                 tick = m.symbol_info_tick(sym)
                 price = float(tick.bid if is_buy else tick.ask)
-                new_sl = next_trail_sl(is_buy, cur_sl, extreme, atr, mult, price, min_dist)
+                # initial SL (dari jurnal) → R. Fallback: cur_sl (kalau belum pernah trail, itu = initial).
+                initial_sl = (journal.initial_sl_for_ticket(int(p.ticket)) if journal else None) or cur_sl
+                new_sl = trail_after_1r(is_buy, entry, initial_sl, cur_sl, extreme, atr,
+                                        mult, price, min_dist, activate_r)
                 if new_sl is None:
                     continue
                 new_sl = round(new_sl, digits)
@@ -198,6 +226,18 @@ def demo():
     assert next_trail_sl(True, 2961, 3100, 10, 3, 3072, 5.0) == 3067   # clamp: SL ≤ price-min_dist
     assert next_trail_sl(False, 2039, 2000, 10, 3, 1995, 1.0) == 2030  # SELL cermin: 2000+3*10
     assert next_trail_sl(False, 2020, 2000, 10, 3, 1995, 1.0) is None  # SELL ratchet
+    # trail_after_1r: grace-period 1R + snap ke BE. entry=4001, initial_sl=4029 → R=28.
+    #   SELL: profit = entry - extreme. 1R tercapai kalau extreme ≤ 4001-28 = 3973.
+    assert trail_after_1r(False, 4001, 4029, 4029, 3983, 12, 3, 3990, 0.01, 1.0) is None  # low 3983: baru 18<28 → DIAM
+    #   extreme 3970 (profit 31 ≥ 28), harga 3975 masih < BE → chandelier=3970+36=4006 → min BE=4001 → SL=4001
+    assert trail_after_1r(False, 4001, 4029, 4029, 3970, 12, 3, 3975, 0.01, 1.0) == 4001   # snap ke BE
+    #   extreme jauh 3930 (profit 71) → chandelier=3930+36=3966 < BE → SL=3966 (kunci profit)
+    assert trail_after_1r(False, 4001, 4029, 4001, 3930, 12, 3, 3950, 0.01, 1.0) == 3966
+    #   clamp broker: harga sudah balik naik ke 4008 saat 1R baru kena → SL tak bisa < price+min_dist
+    assert trail_after_1r(False, 4001, 4029, 4029, 3970, 12, 3, 4008, 0.01, 1.0) == 4008.01
+    #   BUY cermin: entry=3000, initial_sl=2972 → R=28. high 3035 (profit 35 ≥ 28), harga 3025 > BE → SL=BE 3000
+    assert trail_after_1r(True, 3000, 2972, 2972, 3035, 12, 3, 3025, 0.01, 1.0) == 3000
+    assert trail_after_1r(True, 3000, 2972, 2972, 3015, 12, 3, 3010, 0.01, 1.0) is None    # high 3015: profit 15<28 → DIAM
     # realized outcome dari history deal (executed → PnL riil, bukan simulasi)
     dz = [{"profit": 0.0, "swap": 0.0, "commission": -0.5, "price": 3000.0, "time": 1, "entry": 0},
           {"profit": 85.0, "swap": -1.2, "commission": -0.5, "price": 3085.0, "time": 2, "entry": 1}]

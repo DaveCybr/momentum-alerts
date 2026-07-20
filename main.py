@@ -85,7 +85,7 @@ def run_loop(cfg: dict, strat):
         run_pass(journal, cfg)                       # sim outcome — alert TAK dieksekusi (kualitas sinyal)
         if cfg.get("execution", {}).get("enabled"):
             reconcile_executed(journal, cfg)         # outcome RIIL — alert dieksekusi (PnL runner jujur)
-            manage_positions(cfg)                    # trailing chandelier
+            manage_positions(cfg, journal)           # trailing chandelier (grace-period 1R → BE)
         check_deadman(journal, sc, cfg["delivery"]["telegram"])
 
     threading.Thread(target=scheduler.run_interval_loop, args=(monitor_tick, sc["monitor_sec"]),

@@ -152,6 +152,14 @@ class Journal:
         with self._c() as c:
             return c.execute("SELECT * FROM alerts WHERE id=?", (int(alert_id),)).fetchone()
 
+    def initial_sl_for_ticket(self, ticket: int) -> float | None:
+        """SL ASLI (dari alert) posisi ber-ticket ini — buat hitung R di trailing grace-period.
+        Beda dari SL broker yang sudah ke-trail; ini yang di jurnal, tak berubah."""
+        with self._c() as c:
+            r = c.execute("SELECT sl FROM alerts WHERE ticket=? ORDER BY id DESC LIMIT 1",
+                          (int(ticket),)).fetchone()
+            return float(r["sl"]) if r and r["sl"] is not None else None
+
     # ── config key-value (heartbeat, offset telegram, dsb) ──
     def cfg_set(self, key: str, value: str):
         with self._c() as c:

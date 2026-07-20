@@ -73,6 +73,8 @@ execution:
     tf: M30
     atr_period: 14
     atr_mult: 3.0                     # jarak trail = 3×ATR (entry stop 1.5×ATR → ketat masuk, longgar trail)
+    activate_r: 1.0                   # trail BARU aktif setelah profit ≥ 1R; sebelum itu SL diam di initial
+                                      # (cegah whipsaw di zona rugi). Saat aktif: SL loncat ≥ BE dulu.
     count: 200                        # bar M30 di-fetch tiap monitor pass (cover holding runner)
     partial_on_lock: true             # sekali: bank separuh saat trail pertama kunci SL ≥ BE
   deviation_pct: 0.1                  # toleransi slippage = 0.1% harga (auto-scale gold vs BTC)
