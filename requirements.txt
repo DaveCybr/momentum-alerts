@@ -1,0 +1,4 @@
+pandas>=2.0
+numpy>=1.24
+pyyaml>=6.0
+mt5linux          # client RPyC ke container MT5; menarik rpyc==5.2.3 (harus samain server)

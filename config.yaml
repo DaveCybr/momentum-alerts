@@ -1,0 +1,85 @@
+# ── Momentum Alert Engine — konfigurasi v1 ──
+# Semua threshold = knob. Jangan hardcode di kode.
+
+timezone_display: "Asia/Jakarta"      # WIB (UTC+7) — semua waktu user-facing pakai ini
+source_tz: "Etc/GMT-0"                # tz timestamp bridge (server broker). TODO: konfirmasi —
+                                      # daily candle ter-stamp 07:00, verifikasi sebelum pakai filter sesi
+
+instruments:                          # multi-pair (Valetax .vx). Data owner: edge di XAU(66%)+BTC(61%)
+  - "XAUUSD.vx"
+  - "BTCUSD.vx"
+direction: both                       # long_only | both. 'both' = SELL aktif tapi EKSPERIMEN
+                                      # (edge short belum terbukti — alert ditandai + buat data)
+
+# ── Data: MT5 (Valetax) via mt5linux RPyC. MT5 kasih semua TF native, tanpa resample. ──
+data:
+  mt5:
+    host_env: MT5_HOST                # container→"mt5" (service name) ; test di host VPS→"localhost"
+    port_env: MT5_PORT
+    host: localhost
+    port: 8001
+  counts:                             # jumlah candle per TF (native dari MT5)
+    M30: 400
+    H1:  400
+    H4:  400
+    D1:  400
+  entry_tfs:  [M30, H1]
+  regime_tfs: [H4, D1]
+
+# ── Strategi aktif (v1 = trend_pullback, terbukti & deterministik). SMC = challenger Phase 3. ──
+strategy:
+  active: trend_pullback
+  params:
+    ema_fast: 20
+    ema_slow: 50
+    ema_trend: 200                    # regime filter di H4
+    atr_period: 14
+    rsi_period: 14
+    sl_atr_mult: 1.5
+    tp_r: [1.5, 3.0, 5.0]             # target LEBAR — data: runner >12h = 74% profit XAU
+                                      # NB: trailing hidup di execution.trail (bukan knob mati di sini)
+
+# ── Alert engine: bias-ke-diam (mulai super ketat) ──
+alert:
+  max_per_day: 5
+  cooldown_hours: 2                   # per arah, kecuali regime flip
+  min_tier: HIGH_CONF                 # v1 cuma A+ (longgarkan nanti kalau kepercayaan terbangun)
+  skip_hours_wib: []                  # DIKOSONGKAN 20/07: filter subuh nahan 2 SELL HIGH_CONF (id1,2). Prinsip: jangan over-filter sesi (Asia 67% WR). Skip lama basis sampel kecil.
+  soft_filter_days_wib: [Wed, Thu]    # hari lemah historis → naikkan ambang. TODO: hitung ulang di WIB
+  soft_min_score: 5                   # di hari lemah, skor minimal dinaikkan
+
+scheduler:
+  eval_on_close: M30                  # tick tiap M30 close (:00/:30 WIB)
+  minutes: 30
+  offset_sec: 5                       # jeda setelah close biar candle sudah final di bridge
+  monitor_sec: 60                     # monitor auto-outcome tiap 60 detik
+  deadman_min: 90                     # kalau scheduler diam > ini → alarm "buta" ke Telegram
+
+delivery:
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env: TELEGRAM_CHAT_ID
+  send_chart: false                   # v1 teks dulu (hemat latensi)
+
+# ── Eksekusi (v1: one-tap manual, DEMO). Short eksperimen dikunci dari eksekusi. ──
+execution:
+  enabled: true
+  allow_short: true                   # DEMO: short boleh dieksekusi (ngumpulin data). Set false utk live
+  risk_percent: 1.0                   # target risk/trade (di-floor lot minimum broker)
+  max_positions: 1                    # v1 = 1 posisi PER instrumen. layering/multi = v2
+  target_tp: 3                        # TP referensi (dipakai HANYA kalau trailing:false)
+  trailing: true                      # runner: order TANPA TP keras → exit lewat trailing SL (chandelier)
+  trail:
+    tf: M30
+    atr_period: 14
+    atr_mult: 3.0                     # jarak trail = 3×ATR (entry stop 1.5×ATR → ketat masuk, longgar trail)
+    count: 200                        # bar M30 di-fetch tiap monitor pass (cover holding runner)
+    partial_on_lock: true             # sekali: bank separuh saat trail pertama kunci SL ≥ BE
+  deviation_pct: 0.1                  # toleransi slippage = 0.1% harga (auto-scale gold vs BTC)
+  magic: 20260719
+
+journal:
+  db_path: "var/signals.db"           # /app/var (volume) — bukan data/ (itu package python)
+
+ai:
+  enabled: false                      # v1 STUB. Phase 2: narator grounded + wajib sebut invalidasi

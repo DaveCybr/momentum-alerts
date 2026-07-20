@@ -1,0 +1,23 @@
+# Secrets & data — JANGAN commit
+.env
+*.env
+mt5-config/
+tool-data/
+var/
+*.db
+*.db-wal
+*.db-shm
+
+# Data trade broker pribadi (547 trade asli) — bukan buat repo
+phase0/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp

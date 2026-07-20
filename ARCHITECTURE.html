@@ -1,0 +1,429 @@
+<title>Momentum Alert Engine — Arsitektur</title>
+<style>
+  :root{
+    --bg:#e9edf1; --panel:#ffffff; --panel-2:#f4f7f9;
+    --ink:#14212b; --ink-soft:#4c5a67; --ink-faint:#7b8a97;
+    --line:#d2dae1; --line-strong:#b7c2cb;
+    --accent:#0d7686; --accent-ink:#0a5a66; --accent-soft:#d6ebef;
+    --good:#1d8a51; --good-soft:#d8efe0;
+    --warn:#a76a12; --warn-soft:#f2e6cf;
+    --crit:#bd4635; --crit-soft:#f3ddd7;
+    --diagram-bg:#0e1b24; --diagram-edge:#20323e;
+    --radius:14px; --maxw:940px; --readw:74ch;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0a1015; --panel:#111b23; --panel-2:#0d161d;
+      --ink:#e7eef3; --ink-soft:#9aabb7; --ink-faint:#6b7c88;
+      --line:#22303b; --line-strong:#31424e;
+      --accent:#34b8ca; --accent-ink:#5fcede; --accent-soft:#12303a;
+      --good:#43b579; --good-soft:#122b1f;
+      --warn:#d6a24a; --warn-soft:#2c2413;
+      --crit:#e0705f; --crit-soft:#2e1712;
+      --diagram-bg:#0a141b; --diagram-edge:#1b2933;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#e9edf1; --panel:#ffffff; --panel-2:#f4f7f9;
+    --ink:#14212b; --ink-soft:#4c5a67; --ink-faint:#7b8a97;
+    --line:#d2dae1; --line-strong:#b7c2cb;
+    --accent:#0d7686; --accent-ink:#0a5a66; --accent-soft:#d6ebef;
+    --good:#1d8a51; --good-soft:#d8efe0;
+    --warn:#a76a12; --warn-soft:#f2e6cf;
+    --crit:#bd4635; --crit-soft:#f3ddd7;
+    --diagram-bg:#0e1b24; --diagram-edge:#20323e;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0a1015; --panel:#111b23; --panel-2:#0d161d;
+    --ink:#e7eef3; --ink-soft:#9aabb7; --ink-faint:#6b7c88;
+    --line:#22303b; --line-strong:#31424e;
+    --accent:#34b8ca; --accent-ink:#5fcede; --accent-soft:#12303a;
+    --good:#43b579; --good-soft:#122b1f;
+    --warn:#d6a24a; --warn-soft:#2c2413;
+    --crit:#e0705f; --crit-soft:#2e1712;
+    --diagram-bg:#0a141b; --diagram-edge:#1b2933;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+    line-height:1.6;margin:0;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:clamp(20px,4vw,52px) clamp(16px,4vw,32px)}
+  .col{max-width:var(--readw)}
+  h1,h2,h3{font-family:var(--mono);font-weight:650;line-height:1.2;text-wrap:balance;letter-spacing:-.01em}
+  h1{font-size:clamp(1.7rem,4.5vw,2.5rem);margin:.2em 0 .1em}
+  h2{font-size:1.28rem;margin:0 0 .1em}
+  h3{font-size:1rem;margin:0 0 .3em}
+  p{margin:.5em 0}
+  a{color:var(--accent-ink)}
+  .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--accent-ink);font-weight:600}
+  .lead{font-size:1.06rem;color:var(--ink-soft)}
+  .faint{color:var(--ink-faint)}
+  code,.mono{font-family:var(--mono);font-size:.9em}
+  code{background:var(--panel-2);padding:.1em .38em;border-radius:5px;border:1px solid var(--line)}
+
+  header.head{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:8px}
+  .metastrip{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .tag{font-family:var(--mono);font-size:.72rem;padding:.28em .6em;border-radius:999px;
+    border:1px solid var(--line-strong);color:var(--ink-soft);background:var(--panel)}
+  .tag.k{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-soft)}
+
+  section{margin:44px 0;scroll-margin-top:20px}
+  .sec-h{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
+  .sec-h .n{font-family:var(--mono);font-size:.8rem;color:var(--accent-ink);
+    border:1px solid var(--accent);border-radius:6px;padding:.1em .5em;flex:none}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px 22px}
+  .grid{display:grid;gap:14px}
+  @media(min-width:680px){.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:repeat(2,1fr)}}
+
+  /* principle chips */
+  .principles{display:grid;gap:12px;margin-top:18px}
+  @media(min-width:680px){.principles{grid-template-columns:repeat(3,1fr)}}
+  .principle{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:10px;padding:14px 16px}
+  .principle b{font-family:var(--mono);font-size:.82rem;color:var(--accent-ink);display:block;margin-bottom:4px}
+  .principle span{font-size:.92rem;color:var(--ink-soft)}
+
+  /* diagram surface — always dark "drafting board" */
+  .board{background:var(--diagram-bg);border:1px solid var(--diagram-edge);border-radius:var(--radius);
+    padding:14px;overflow-x:auto;margin-top:4px}
+  .board pre.mermaid{background:transparent;margin:0;min-width:520px;display:flex;justify-content:center}
+  .board .cap{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
+    color:#6f8794;padding:4px 6px 10px}
+
+  /* module tree */
+  .tree{font-family:var(--mono);font-size:.83rem;line-height:1.75;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;overflow-x:auto}
+  .tree .d{color:var(--accent-ink);font-weight:600}
+  .tree .c{color:var(--ink-faint)}
+  .tree .reuse{color:var(--good);font-weight:600}
+  .tree .stub{color:var(--warn);font-weight:600}
+
+  /* gates row */
+  .gates{display:grid;gap:12px;margin-top:6px}
+  @media(min-width:680px){.gates{grid-template-columns:repeat(3,1fr)}}
+  .gate{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .gate .lbl{font-family:var(--mono);font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink)}
+  .gate h3{margin:.3em 0 .2em}
+  .gate p{font-size:.9rem;color:var(--ink-soft);margin:.2em 0 0}
+  .veto{display:inline-block;font-family:var(--mono);font-size:.68rem;margin-top:8px;
+    color:var(--crit);border:1px solid var(--crit);border-radius:5px;padding:.05em .45em}
+
+  /* phase gates */
+  .phases{display:grid;gap:10px}
+  .phase{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .phase .pk{font-family:var(--mono);font-weight:650;color:var(--accent-ink);font-size:.9rem;white-space:nowrap}
+  .phase .body b{font-size:.95rem}
+  .phase .body p{font-size:.9rem;color:var(--ink-soft);margin:.15em 0 0}
+  .phase .g{font-family:var(--mono);font-size:.75rem;color:var(--warn);margin-top:6px;display:block}
+
+  /* matrix */
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
+  table{border-collapse:collapse;width:100%;min-width:640px;font-size:.9rem}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-soft);background:var(--panel-2);position:sticky;top:0}
+  tr:last-child td{border-bottom:none}
+  td .risk{font-weight:600}
+  .num{font-family:var(--mono);color:var(--ink-faint);font-variant-numeric:tabular-nums}
+  .chip{font-family:var(--mono);font-size:.72rem;font-weight:600;padding:.22em .6em;border-radius:999px;white-space:nowrap;display:inline-block}
+  .chip.good{color:var(--good);background:var(--good-soft);border:1px solid var(--good)}
+  .chip.warn{color:var(--warn);background:var(--warn-soft);border:1px solid var(--warn)}
+  .chip.crit{color:var(--crit);background:var(--crit-soft);border:1px solid var(--crit)}
+
+  /* concerns grid */
+  .concern{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+  .concern b{font-family:var(--mono);font-size:.8rem;color:var(--accent-ink);display:block;margin-bottom:3px}
+  .concern span{font-size:.88rem;color:var(--ink-soft)}
+
+  .note{background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--warn);
+    border-radius:10px;padding:14px 16px;font-size:.94rem}
+  .note b{font-family:var(--mono)}
+
+  ul.tight{margin:.4em 0;padding-left:1.2em}
+  ul.tight li{margin:.28em 0}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:14px;font-size:.82rem;color:var(--ink-soft)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  hr.div{border:none;border-top:1px solid var(--line);margin:40px 0}
+  footer{color:var(--ink-faint);font-size:.82rem;font-family:var(--mono);
+    border-top:1px solid var(--line);padding-top:18px;margin-top:40px}
+  @media (prefers-reduced-motion:no-preference){:focus-visible{outline:2px solid var(--accent);outline-offset:2px}}
+</style>
+
+<div class="wrap">
+
+  <header class="head">
+    <div class="col">
+      <div class="eyebrow">Arsitektur · v1 thin slice</div>
+      <h1>Momentum Alert Engine</h1>
+      <p class="lead">Alat sinyal SMC untuk day trader yang kerja full-time. Rule yang menarik
+      pelatuk, AI yang menerjemahkan, manusia yang memutuskan. Dokumen ini memastikan tiap
+      komponen, alur, dan celah kegagalan punya rumah di arsitektur.</p>
+    </div>
+    <div class="metastrip">
+      <span class="tag k">day trader M30/H1</span>
+      <span class="tag k">MT5 bridge</span>
+      <span class="tag">single process · 3 thread</span>
+      <span class="tag">SQLite</span>
+      <span class="tag">strategi: smc_top_down</span>
+      <span class="tag">AI = narator (P2)</span>
+    </div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--good)"></i> teratasi di desain</span>
+      <span><i class="dot" style="background:var(--warn)"></i> hanya diungkap / butuh iterasi</span>
+      <span><i class="dot" style="background:var(--crit)"></i> di luar jangkauan software</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="col">
+      <div class="eyebrow">Prinsip pengikat</div>
+      <div class="principles">
+        <div class="principle"><b>Rule trigger · AI narasi</b><span>Trigger 100% deterministik & terukur. AI hanya menjelaskan angka yang sudah dihitung — tak pernah menghitung/mengarang harga.</span></div>
+        <div class="principle"><b>Ship tipis</b><span>v1 = 1 strategi, 1 pair, tanpa plugin/shadow/AI. Bangun katedral hanya setelah kapelnya jalan.</span></div>
+        <div class="principle"><b>Jurnal otomatis</b><span>Outcome di-track sendiri oleh monitor. Beban manusia = 1 tap. Feedback loop selamat dari kemalasan.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <section>
+    <div class="sec-h"><span class="n">01</span><h2>Peta komponen</h2></div>
+    <div class="col"><p class="faint">Satu proses Python, tiga thread. Sistem eksternal di kiri/kanan,
+    SQLite sebagai tulang punggung. Tanpa gunicorn multi-worker → <b>tanpa leader lock, tanpa masalah fcntl.</b></p></div>
+    <div class="board">
+      <div class="cap">system · single process</div>
+      <pre class="mermaid">
+%%{init:{'theme':'dark','themeVariables':{'primaryColor':'#12212b','primaryBorderColor':'#34b8ca','primaryTextColor':'#dfeef2','lineColor':'#5aa6b3','fontFamily':'ui-monospace, monospace','clusterBkg':'#0f1c25','clusterBorder':'#26404c'}}}%%
+flowchart TB
+  MT5["MT5 Bridge<br/>(harga broker + spread)"]:::ext
+  DP["TwelveData / yfinance<br/>(fallback)"]:::ext
+  subgraph PROC["SATU PROSES PYTHON"]
+    direction TB
+    SCH[["scheduler thread"]]
+    ENG["engine · SMC state machine"]
+    ALR["alert engine<br/>dedup · cooldown · cap · tier"]
+    DEL["delivery"]
+    MON[["monitor thread"]]
+    POLL[["telegram-poll thread"]]
+    SCH --> ENG --> ALR --> DEL
+  end
+  DB[("SQLite<br/>alerts · outcomes · tags")]
+  TG["Telegram"]:::ext
+  AI["AI API<br/>(Phase 2)"]:::ext
+  MT5 --> SCH
+  DP --> SCH
+  DEL --> TG
+  DEL --> DB
+  MON --> DB
+  MON -->|"auto-label TP/SL<br/>+ dead-man"| TG
+  TG --> POLL --> DB
+  AI -.->|"narasi (opsional)"| DEL
+  classDef ext fill:#132a30,stroke:#34b8ca,color:#cfeef3;
+      </pre>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">02</span><h2>Alur runtime</h2></div>
+    <div class="col"><p class="faint">Tiga loop independen berbagi SQLite (WAL). Pipeline utama dipicu di candle-close M30.</p></div>
+    <div class="board">
+      <div class="cap">pipeline · candle-close tick</div>
+      <pre class="mermaid">
+%%{init:{'theme':'dark','themeVariables':{'primaryColor':'#12212b','primaryBorderColor':'#34b8ca','primaryTextColor':'#dfeef2','lineColor':'#5aa6b3','fontFamily':'ui-monospace, monospace'}}}%%
+flowchart LR
+  T{{"candle close<br/>M30 :00/:30"}} --> D["fetch multi-TF<br/>M30·H1·H4·D1"]
+  D --> S["strategy.evaluate()"]
+  S -->|"Setup"| A{"alert engine<br/>lolos filter?"}
+  S -->|"None"| W["tunggu candle berikut"]
+  A -->|"pass"| N["AI narrate<br/>(P2 · stub v1)"]
+  A -->|"suppressed"| L["log only"]
+  N --> G["Telegram + tombol<br/>✅/ambil ⏭/skip"]
+  G --> J[("journal")]
+      </pre>
+    </div>
+    <div class="grid g3" style="margin-top:14px">
+      <div class="concern"><b>THREAD scheduler</b><span>Tick di candle close → pipeline di atas. State machine dievaluasi per instrumen.</span></div>
+      <div class="concern"><b>THREAD monitor (~1 mnt)</b><span>Awasi alert ACTIVE vs harga → auto-label TP/SL. Cek heartbeat scheduler → dead-man's switch.</span></div>
+      <div class="concern"><b>THREAD telegram-poll</b><span>getUpdates (long-poll, tanpa webhook) → tap /ambil /skip masuk jurnal.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">03</span><h2>Struktur modul</h2></div>
+    <div class="col"><p class="faint"><span class="reuse">hijau</span> = reuse dari goldexai · <span class="stub">amber</span> = stub di v1 · seam ditaruh dari awal, mesinnya menyusul.</p></div>
+    <div class="tree">
+momentum-alerts/<br/>
+├─ <span class="d">config.yaml</span>            <span class="c"># instrumen · TF · threshold · telegram · model</span><br/>
+├─ <span class="d">main.py</span>                <span class="c"># boot → start 3 thread → health</span><br/>
+├─ <span class="d">data/</span><br/>
+│  ├─ market.py            <span class="c"># bundle candle multi-TF</span><br/>
+│  └─ sources.py           <span class="reuse">↺ MT5→TwelveData→yfinance</span> <span class="c">· seam: BacktestSource</span><br/>
+├─ <span class="d">engine/</span><br/>
+│  ├─ types.py             <span class="c"># Setup, Bundle</span><br/>
+│  ├─ indicators.py        <span class="reuse">↺ EMA/ATR/ADX/RSI</span><br/>
+│  ├─ structure.py         <span class="reuse">↺ swing/OB/FVG/BOS/CHoCH</span> <span class="c">+ liquidity pool</span><br/>
+│  └─ strategy.py          <span class="c"># interface + SmcTopDown (state machine)</span><br/>
+├─ <span class="d">alert/</span>engine.py       <span class="c"># dedup·cooldown·cap·tier</span><br/>
+├─ <span class="d">ai/</span>narrator.py        <span class="stub"># STUB v1</span> <span class="c">→ narate(setup)</span><br/>
+├─ <span class="d">delivery/</span><br/>
+│  ├─ telegram.py          <span class="reuse">↺ kirim + inline button</span><br/>
+│  └─ callbacks.py         <span class="c"># poll → /ambil /skip</span><br/>
+├─ <span class="d">journal/</span>db.py          <span class="c"># SQLite: alerts·outcomes·tags</span><br/>
+├─ <span class="d">monitor/</span>watcher.py     <span class="c"># auto-outcome + dead-man</span><br/>
+└─ <span class="d">ops/</span><br/>
+   ├─ scheduler.py         <span class="c"># tick candle-close</span><br/>
+   └─ health.py            <span class="c"># heartbeat</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">04</span><h2>Strategi: state machine SMC</h2></div>
+    <div class="col"><p class="faint">Alur day-trading owner sebagai urutan berstateful, bukan skor satu candle.
+    State bisa <b>di-rebuild dari replay candle</b> saat boot — tak perlu simpan terpisah.</p></div>
+    <div class="board">
+      <div class="cap">smc_top_down · liquidity → sweep → POI → konfirmasi</div>
+      <pre class="mermaid">
+%%{init:{'theme':'dark','themeVariables':{'primaryColor':'#12212b','primaryBorderColor':'#34b8ca','primaryTextColor':'#dfeef2','lineColor':'#5aa6b3','fontFamily':'ui-monospace, monospace'}}}%%
+stateDiagram-v2
+  [*] --> IDLE
+  IDLE --> MAP_LIQUIDITY: bias D1+H4 jelas
+  IDLE --> IDLE: ranging (skip)
+  MAP_LIQUIDITY --> WAIT_SWEEP: pool ditandai<br/>(EQH/EQL, PDH/PDL, hi/lo sesi)
+  WAIT_SWEEP --> ARMED: sweep<br/>(wick tembus + close balik)
+  ARMED --> FIND_POI: arah = lawan sweep,<br/>searah HTF
+  FIND_POI --> SETUP: tap POI + konfirmasi<br/>(CHoCH / rejection M30·H1)
+  SETUP --> [*]: ALERT ✔
+  ARMED --> IDLE: timeout / struktur rusak
+  FIND_POI --> IDLE: bias flip / invalidasi
+      </pre>
+    </div>
+    <div class="note" style="margin-top:14px"><b>Titik subjektif:</b> pilih POI. Mesin nemu SEMUA order block; kamu ambil SATU.
+    Dijembatani <b>skor kualitas POI</b> (fresh · konfluen FVG · nempel level HTF · ukuran wajar), dikalibrasi dari data pilihanmu di Phase 0. Ini area iterasi utama.</div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">05</span><h2>Tiga gate di dalam evaluate()</h2></div>
+    <div class="gates">
+      <div class="gate"><div class="lbl">Gate A · Regime</div><h3>Follow the trend</h3><p>Bias H4 + Daily. Long hanya saat HTF bullish, short saat bearish, ranging → blokir.</p><span class="veto">VETO KERAS · non-negotiable</span></div>
+      <div class="gate"><div class="lbl">Gate B · Momentum</div><h3>Urutan SMC</h3><p>Liquidity → sweep → POI → konfirmasi. Inti state machine. Sweep = trigger utama gaya ini.</p></div>
+      <div class="gate"><div class="lbl">Gate C · Volume</div><h3>Pendukung</h3><p>Konfirmasi partisipasi (tick-volume MT5 / proxy range). Untuk SMC = penguat, bukan syarat mati.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">06</span><h2>Data & penyimpanan</h2></div>
+    <div class="grid g2">
+      <div class="panel">
+        <h3>Sumber data (berlapis)</h3>
+        <ul class="tight">
+          <li><b>MT5 Bridge</b> — sumber kebenaran, harga broker + spread</li>
+          <li>Twelve Data → yfinance — fallback otomatis, log sumber terpakai</li>
+          <li>Selalu buang candle aktif — analisa hanya candle tertutup</li>
+          <li><span class="mono">sources.py</span> = seam yang sama untuk <b>backtest</b> (replay historis)</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>SQLite · WAL · volume /data</h3>
+        <ul class="tight">
+          <li><span class="mono">alerts</span> — snapshot + tag <span class="mono">strategy/version</span></li>
+          <li><span class="mono">outcomes</span> — WIN/LOSS/BE (auto, oleh monitor)</li>
+          <li><span class="mono">tags</span> — taken/skip (1 tap)</li>
+          <li><span class="mono">config_kv</span> — heartbeat dll</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">07</span><h2>Rencana berfase + gerbang go/no-go</h2></div>
+    <div class="board">
+      <div class="cap">tiap panah = gerbang metrik, bukan jadwal</div>
+      <pre class="mermaid">
+%%{init:{'theme':'dark','themeVariables':{'primaryColor':'#12212b','primaryBorderColor':'#34b8ca','primaryTextColor':'#dfeef2','lineColor':'#5aa6b3','fontFamily':'ui-monospace, monospace'}}}%%
+flowchart LR
+  P0["Phase 0<br/>2 mgg · 0 kode<br/>log manual"] --> G0{"konsisten?<br/>cocok mata?"}
+  G0 -->|"tidak"| STOP["STOP / perbaiki definisi"]
+  G0 -->|"ya"| P1["Phase 1 · thin<br/>SMC · XAUUSD · alert<br/>jurnal auto-outcome"]
+  P1 --> G1{"presisi oke?<br/>kamu act?"}
+  G1 -->|"ya"| P2["Phase 2<br/>AI narator kritis<br/>dead-man · digest"]
+  P2 --> P3["Phase 3<br/>multi-pair · pluggable<br/>shadow · backtest"]
+      </pre>
+    </div>
+    <div class="phases" style="margin-top:16px">
+      <div class="phase"><div class="pk">Phase 0</div><div class="body"><b>Uji asumsi fatal — gratis.</b><p>Catat manual tiap setup yang kamu lihat + judge apa tool bakal cocok. Menyerang 3 pembunuh terbesar tanpa modal.</p><span class="g">GATE → nggak konsisten nyatet = proyek dihentikan</span></div></div>
+      <div class="phase"><div class="pk">Phase 1</div><div class="body"><b>Vertical slice tertipis.</b><p>Deteksi → alert → jurnal auto. Tanpa AI, plugin, shadow, multi-pair. Harus berguna tanpa AI.</p><span class="g">GATE → presisi & follow-through terukur</span></div></div>
+      <div class="phase"><div class="pk">Phase 2</div><div class="body"><b>Hanya jika Phase 1 lolos.</b><p>AI narator (wajib sebut invalidasi), dead-man's switch, digest mingguan.</p></div></div>
+      <div class="phase"><div class="pk">Phase 3</div><div class="body"><b>Skala & eksperimen.</b><p>Multi-pair, strategi pluggable, shadow champion/challenger, backtest via replay.</p></div></div>
+    </div>
+  </section>
+
+  <hr class="div">
+
+  <section>
+    <div class="sec-h"><span class="n">08</span><h2>Matriks kelengkapan: 9 celah → siapa yang nanganin</h2></div>
+    <div class="col"><p class="faint">Jantung dokumen ini. Tiap mode kegagalan yang kita temukan punya pemilik di arsitektur — atau ditandai jujur sebagai di luar jangkauan software.</p></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Celah</th><th>Ditangani oleh (arsitektur)</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td><span class="risk">Berhenti isi jurnal</span></td><td>Auto-outcome (monitor) + tag 1-tap + digest mingguan di-push</td><td><span class="chip good">teratasi</span></td></tr>
+          <tr><td class="num">2</td><td><span class="risk">Deteksi ≠ matamu</span></td><td>Skor kualitas POI, dikalibrasi dari data pilihanmu Phase 0; tool = subset matamu dulu</td><td><span class="chip warn">iterasi</span></td></tr>
+          <tr><td class="num">3</td><td><span class="risk">Death spiral kepercayaan</span></td><td>Alert engine bias-ke-diam: mulai super ketat, cap harian, cooldown, tier</td><td><span class="chip good">teratasi</span></td></tr>
+          <tr><td class="num">4</td><td><span class="risk">Tetap takut entry</span></td><td>Entry zona limit (aktivasi rendah) + track follow-through sebagai data</td><td><span class="chip crit">diungkap saja</span></td></tr>
+          <tr><td class="num">5</td><td><span class="risk">Strategi tak ber-edge</span></td><td>Jurnal ukur expectancy setelah spread — angkanya ya angkanya</td><td><span class="chip crit">diungkap saja</span></td></tr>
+          <tr><td class="num">6</td><td><span class="risk">Over-engineering</span></td><td>Disiplin scope v1: 1 strategi · 1 pair · tanpa plugin/shadow/AI</td><td><span class="chip good">teratasi</span></td></tr>
+          <tr><td class="num">7</td><td><span class="risk">Bridge mati diam-diam</span></td><td>Dead-man's switch (monitor cek heartbeat → teriak "buta")</td><td><span class="chip good">teratasi</span></td></tr>
+          <tr><td class="num">8</td><td><span class="risk">Latency alert telat</span></td><td>Entry zona pullback + limit — gaya day-trading tahan latency</td><td><span class="chip good">teratasi</span></td></tr>
+          <tr><td class="num">9</td><td><span class="risk">AI jadi mesin persuasi</span></td><td>AI stub di v1; P2 wajib sebut invalidasi (devil's advocate); AI mati → alert tetap kirim</td><td><span class="chip good">teratasi</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note" style="margin-top:14px"><b>Jujur:</b> #4 (takut) & #5 (edge) <b>tak bisa ditutup software apa pun.</b> Tugas tool bukan menyelesaikannya —
+    tapi memberimu kebenaran soal keduanya, yang mana kebanyakan trader tak pernah dapat.</div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">09</span><h2>Concern lintas-sektor — semua punya rumah</h2></div>
+    <div class="grid g3">
+      <div class="concern"><b>Concurrency</b><span>Single process + 3 thread. Tanpa gunicorn.</span></div>
+      <div class="concern"><b>Duplikasi sinyal</b><span>Mati by design — tak ada multi-worker. + dedup candle.</span></div>
+      <div class="concern"><b>Durabilitas state</b><span>Rebuild dari replay candle saat boot. Tak ada state store terpisah.</span></div>
+      <div class="concern"><b>Ketahanan data</b><span>Rantai fallback MT5→TwelveData→yfinance, log sumber.</span></div>
+      <div class="concern"><b>Observability</b><span>Heartbeat + dead-man's switch. Senyap ≠ aman.</span></div>
+      <div class="concern"><b>Jalur backtest</b><span>Gratis dari seam data (BacktestSource, interface sama).</span></div>
+      <div class="concern"><b>Kalibrasi</b><span>Semua threshold = knob config, dituning lewat jurnal.</span></div>
+      <div class="concern"><b>Cross-platform</b><span>Windows (dev) + Linux (Coolify). Tanpa asumsi path Unix.</span></div>
+      <div class="concern"><b>Deploy</b><span>1 container, <span class="mono">python main.py</span>, Coolify worker, SQLite di volume.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="n">10</span><h2>Sengaja BUKAN di v1</h2></div>
+    <div class="col">
+      <ul class="tight">
+        <li>Registry/loader strategi plugin — sampai strategi #2 lahir</li>
+        <li>Shadow mode & champion/challenger — Phase 3</li>
+        <li>AI narator penuh — stub dulu, Phase 2</li>
+        <li>Multi-pair — XAUUSD dulu sampai deteksi matang</li>
+        <li>Web dashboard / landing — tak ada; konsumsi via Telegram</li>
+        <li>Backtester sebagai syarat rilis — jurnal = forward-test</li>
+        <li>gunicorn multi-worker + leader lock — tak dibutuhkan untuk 1 user</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    Momentum Alert Engine · dokumen arsitektur v1 · rule trigger — AI narasi — human decide<br/>
+    D:\trading tools\momentum-alerts\ · turunan analisis goldexai.com
+  </footer>
+
+</div>
