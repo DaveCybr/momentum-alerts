@@ -33,7 +33,7 @@ def decide(setup: Setup, candle_id: str, cfg: dict, journal: Journal,
         return False, f"jam skip {now.hour:02d} WIB"
 
     # 4. dedup candle
-    if journal.candle_sent(candle_id, setup.direction):
+    if journal.candle_sent(setup.symbol, candle_id, setup.direction):
         return False, f"dup candle {candle_id}"
 
     # 5. cooldown
