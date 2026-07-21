@@ -21,3 +21,6 @@ venv/
 .vscode/
 .idea/
 *.swp
+
+# Isolated development worktrees
+.worktrees/
