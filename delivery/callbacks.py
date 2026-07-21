@@ -13,23 +13,31 @@ from ops.clock import wib_str
 
 
 def _do_execute(a, journal: Journal, cfg: dict) -> tuple[bool, str]:
-    """Eksekusi satu alert row `a`. Return (ok, pesan_status). SELL dikunci kalau allow_short=false."""
+    """Eksekusi SMC LIMIT order. SELL dikunci kalau allow_short=false."""
     if a["direction"] == "SELL" and not cfg["execution"].get("allow_short", False):
         return False, "SHORT dikunci (allow_short=false)"
+    # entry dari 50% FVG (disimpan di gates_json.entry or entry_low/entry_high)
+    entry = float(a["entry_high"] if a["direction"] == "SELL" else a["entry_low"])
+    try:
+        gj = json.loads(a["gates_json"]) if a.get("gates_json") else {}
+        entry = float(gj.get("entry", entry))
+    except Exception:
+        pass
     tps = json.loads(a["tp_json"])
-    idx = min(int(cfg["execution"]["target_tp"]), len(tps)) - 1
-    order_tp = 0.0 if cfg["execution"].get("trailing", True) else tps[idx]   # runner: tanpa TP keras
+    tp = float(tps[0])
+    expiry_min = int(cfg["execution"].get("pending_expiry_min", 15))
     from execute import broker
     try:
-        r = broker.place(cfg, a["symbol"], a["direction"], a["sl"], order_tp)
+        r = broker.place_limit(cfg, a["symbol"], a["direction"], entry, a["sl"], tp, expiry_min)
     except Exception as e:
         return False, f"eksekusi error: {e}"
     if r.get("ok"):
         journal.tag_taken(a["id"], "YES")
-        if r.get("ticket"):
-            journal.set_ticket(a["id"], r["ticket"])   # jembatan alert→posisi utk outcome riil
-        exit_line = "trailing SL" if order_tp == 0.0 else f"TP {tps[idx]}"
-        return True, f"lot {r['lot']} @ {r['price']} · SL {a['sl']} · {exit_line} · risk ~${r['est_risk']}"
+        if r.get("order_ticket"):
+            journal.set_ticket(a["id"], r["order_ticket"])
+            journal.set_status(a["id"], "PENDING")
+        return True, (f"LIMIT lot {r['lot']} @ {r['entry']} · SL {a['sl']} · TP {tp} · "
+                      f"risk ~${r['est_risk']} ({r.get('risk_pct','?')}%)")
     return False, f"gagal: {r.get('msg')}"
 
 
@@ -54,6 +62,11 @@ def handle_callback(data: str, journal: Journal, cfg: dict) -> tuple[str, str | 
     if action == "exec":
         if not cfg.get("execution", {}).get("enabled"):
             return "Eksekusi dimatikan di config", None
+        from monitor.watcher import daily_stop_hit
+        from ops.clock import now_wib
+        hit, why = daily_stop_hit(journal, cfg, now_wib())
+        if hit:
+            return f"⛔ Batas harian ({why}) — stop", None
         ok, msg = _do_execute(a, journal, cfg)
         if ok:
             return "\U0001F7E2 Eksekusi OK", f"\U0001F7E2 DIEKSEKUSI — {msg} · {wib_str()}"
