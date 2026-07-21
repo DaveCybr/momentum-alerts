@@ -222,25 +222,36 @@ def _mk(rows, freq="5min"):
     return df
 
 
-def tp_target(h1, m15, bias, entry, p):
-    """§13: opposing liquidity terdekat. Prioritas: H1 external > M15 structural."""
-    cands = []
+def tp_target(h1, d1, m15, h4, bias, entry, p):
+    """§13: prioritas TP: external H1 > prev-day HL > M15 structural.
+    Kembalikan level likuiditas lawan terdekat di prioritas tertinggi, atau None."""
     win1 = h1.iloc[-p["struct_lookback"]:] if len(h1) > p["struct_lookback"] else h1
     sh1, sl1 = ind.swings(win1, p["swing_k"])
+    tiers = {}  # priority -> list of candidate levels
+    # P1: H1 external
     if bias == "bullish":
-        cands += [float(win1["high"].loc[i]) for i in sh1[sh1].index if float(win1["high"].loc[i]) > entry]
+        tiers[1] = sorted(float(win1["high"].loc[i]) for i in sh1[sh1].index if float(win1["high"].loc[i]) > entry)
     else:
-        cands += [float(win1["low"].loc[i]) for i in sl1[sl1].index if float(win1["low"].loc[i]) < entry]
+        tiers[1] = sorted((float(win1["low"].loc[i]) for i in sl1[sl1].index if float(win1["low"].loc[i]) < entry), reverse=True)
+    # P2: previous day HL
+    if d1 is not None and len(d1) >= 2:
+        prev = d1.iloc[-2]
+        if bias == "bullish" and float(prev["high"]) > entry:
+            tiers[2] = [float(prev["high"])]
+        elif bias == "bearish" and float(prev["low"]) < entry:
+            tiers[2] = [float(prev["low"])]
+    # P3: M15 structural swing (lowest priority)
     if m15 is not None and len(m15) > p["swing_k"] * 2 + 2:
-        w15 = m15.iloc[-p["sweep_lookback"] * 4:] if len(m15) > p["sweep_lookback"] * 4 else m15
+        w15 = m15.iloc[-p["sweep_lookback"] * 4:]
         sh15, sl15 = ind.swings(w15, p["swing_k"])
         if bias == "bullish":
-            cands += [float(w15["high"].loc[i]) for i in sh15[sh15].index if float(w15["high"].loc[i]) > entry]
+            tiers[3] = sorted(float(w15["high"].loc[i]) for i in sh15[sh15].index if float(w15["high"].loc[i]) > entry)
         else:
-            cands += [float(w15["low"].loc[i]) for i in sl15[sl15].index if float(w15["low"].loc[i]) < entry]
-    if not cands:
-        return None
-    return min(cands, key=lambda x: abs(x - entry))
+            tiers[3] = sorted((float(w15["low"].loc[i]) for i in sl15[sl15].index if float(w15["low"].loc[i]) < entry), reverse=True)
+    for prio in sorted(tiers.keys()):
+        if tiers[prio]:
+            return min(tiers[prio], key=lambda x: abs(x - entry))
+    return None
 
 
 def build_plan(bias, entry, sweep_extreme, spread, target, p):
@@ -298,7 +309,7 @@ class SmcCanonical:
         if not confirmed:
             return None, SmcState(state.symbol, "SWEPT", {"bias": bias, "poi": poi, "sweep_extreme": extreme})
 
-        target = tp_target(h1, m15, bias, entry50, p)
+        target = tp_target(h1, bundle.df("D1"), m15, bundle.df("H4"), bias, entry50, p)
         plan = build_plan(bias, entry50, extreme, 0.0, target, p)
         if plan is None:
             return None, SmcState(state.symbol, "SWEPT", {"bias": bias, "poi": poi, "sweep_extreme": extreme})

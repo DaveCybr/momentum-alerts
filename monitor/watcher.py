@@ -9,7 +9,8 @@ ponytail: sim = snapshot ~1mnt, tutup di sentuhan TP1; jalur riil menunggu posis
 """
 from __future__ import annotations
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+import pandas as pd
 
 from journal.db import Journal
 from ops.clock import WIB, now_wib, wib_str
@@ -189,27 +190,74 @@ def daily_stop_hit(journal, cfg, now):
 
 
 def manage_pending(journal, cfg):
-    """§11: fill detection + auto-cancel pending limits."""
+    """§11: fill detection (order ticket ≠ position ticket di MT5) + §6 POI re-check + §3 session-end cancel.
+    Loads latest candle data from MT5 to validate pending orders."""
     from data import sources
     from execute import broker
+    import time as _t
+    from engine.smc_canonical import in_session, poi_invalidated, find_poi, detect_bias, bias_alive, dealing_range, SMC_DEFAULTS
     rows = journal.pending_alerts()
     if not rows:
         return 0
     n = 0
     with sources.MT5_LOCK:
         m = sources._connect(cfg["data"]["mt5"])
+        now_ts = int(_t.time())
+        p = {**SMC_DEFAULTS, **cfg.get("smc_canonical", {})}
         for a in rows:
             tk = int(a["ticket"])
-            pos = m.positions_get(ticket=tk)
-            if pos and len(pos) > 0:
-                journal.set_status(a["id"], "FILLED")
-                n += 1
-                continue
             orders = m.orders_get(ticket=tk)
-            if not orders:
-                journal.record_outcome_r(a["id"], "CANCELLED", "EXPIRED", float(a["entry_high"]),
-                                         classification="Cancelled setup")
-                n += 1
+            if orders and len(orders) > 0:
+                fillable = float(orders[0].price_open)  # masih pending
+                entry_low, entry_high = float(a["entry_low"]), float(a["entry_high"])
+                # penuhi: harga sentuh entry zone
+                tick = m.symbol_info_tick(a["symbol"])
+                price = float(tick.bid if a["direction"] == "BUY" else tick.ask)
+                # cek kondisi auto-cancel
+                sym = a["symbol"]
+                h1 = sources._fetch(m, sym, "H1", 45)
+                m5 = sources._fetch(m, sym, "M5", 25)
+                cancel_reason = None
+                if h1 is not None and m5 is not None:
+                    h1c = h1.iloc[:-1] if len(h1) > 1 else h1
+                    m5c = m5.iloc[:-1] if len(m5) > 1 else m5
+                    bias, bos, protected, bos_idx = detect_bias(h1c, p)
+                    if not bos or not bias_alive(h1c, bias, protected, bos_idx, p):
+                        cancel_reason = "bias hilang"
+                    else:
+                        lo, hi = dealing_range(h1c, bias, protected)
+                        poi = find_poi(h1c, bias, lo, hi, p)
+                        if poi is None or poi_invalidated(h1c, poi, bias):
+                            cancel_reason = "POI invalid"
+                # session-end
+                last_ts = pd.Timestamp(m5.index[-1], tz="UTC") if m5 is not None and len(m5) else None
+                if cancel_reason is None and last_ts is not None:
+                    if not in_session(last_ts, p["sessions_utc"], p["server_utc_offset"]):
+                        cancel_reason = "sesi tutup"
+                if cancel_reason:
+                    broker.cancel_order(cfg, tk)
+                    journal.record_outcome_r(a["id"], "CANCELLED", cancel_reason, float(a["entry_high"]),
+                                             classification=f"Cancelled by monitor: {cancel_reason}")
+                    n += 1
+                    continue
+            else:
+                # order gone from MT5 → check if it filled via history deals
+                from datetime import datetime
+                lookback = int(_t.time()) - 7200  # 2 jam
+                deals = m.history_deals_get(lookback, now_ts, symbol=a["symbol"])
+                filled = False
+                if deals:
+                    for d in deals:
+                        if int(d.order) == tk and int(d.entry) == 0:  # DEAL_ENTRY_IN
+                            journal.set_ticket(a["id"], int(d.position_id))
+                            journal.set_status(a["id"], "FILLED")
+                            filled = True
+                            n += 1
+                            break
+                if not filled:
+                    journal.record_outcome_r(a["id"], "CANCELLED", "EXPIRED", float(a["entry_high"]),
+                                             classification="Cancelled setup (order expired/removed)")
+                    n += 1
     return n
 
 
