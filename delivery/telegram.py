@@ -16,10 +16,11 @@ def format_alert(setup: Setup, now=None) -> str:
     if setup.experimental:
         lines += ["\U0001F9EA <b>EKSPERIMEN</b> — short belum terbukti edge-nya.",
                   "Tandai buat DATA, jangan dibet dulu.", "━" * 16]
+    entry = setup.entry or (setup.entry_high if setup.direction == "BUY" else setup.entry_low)
     lines += [
-        f"\U0001F4C8 {setup.tf} · entry <b>{setup.entry_low}–{setup.entry_high}</b>",
+        f"\U0001F4C8 {setup.tf} · {setup.entry_type} entry <b>{entry}</b> (FVG {setup.entry_low}–{setup.entry_high})",
         f"\U0001F6D1 SL  : {setup.sl}",
-        f"✅ TP  : {tp[0]} / {tp[1]} / {tp[2]}",
+        f"✅ TP  : {tp[0]}" + (f" / {tp[1]} / {tp[2]}" if len(tp) >= 3 else ""),
         f"\U0001F4CA RR  : {setup.rr}  · skor {setup.score}/7",
         f"\U0001F9ED {setup.reason}",
         "━" * 16,
@@ -29,11 +30,10 @@ def format_alert(setup: Setup, now=None) -> str:
 
 
 def alert_keyboard(alert_id: int) -> dict:
-    """Inline keyboard: aksi menempel alert_id spesifik (bukan 'alert terakhir')."""
     return {"inline_keyboard": [[
-        {"text": "\U0001F7E2 Eksekusi", "callback_data": f"exec:{alert_id}"},
-        {"text": "✅ Ambil",           "callback_data": f"take:{alert_id}"},
-        {"text": "⏭ Skip",             "callback_data": f"skip:{alert_id}"},
+        {"text": "\U0001F7E2 Eksekusi Limit", "callback_data": f"exec:{alert_id}"},
+        {"text": "✅ Ambil",                  "callback_data": f"take:{alert_id}"},
+        {"text": "⏭ Skip",                    "callback_data": f"skip:{alert_id}"},
     ]]}
 
 
@@ -81,17 +81,19 @@ def edit_message(cfg: dict, message_id: int, text: str, reply_markup: dict | Non
 
 def demo():
     from engine.models import Setup
-    s = Setup("XAUUSD", "BUY", "M30", 2979.72, 2995.0, 2961.01, [3045.98, 3096.96, 3164.94],
-              "HIGH_CONF", 5, "regime BULL · pullback · konfirmasi", {})
+    # SMC-style alert: single TP, LIMIT entry
+    s = Setup("XAUUSD.vx", "BUY", "M5", 2979.0, 2985.0, 2970.0, [3010.0],
+              "HIGH_CONF", 7, "SMC bullish · POI · sweep · MSS · RR3.0", {},
+              entry_type="LIMIT", entry=2982.0, rr_planned=3.0)
     msg = format_alert(s)
-    assert "XAUUSD" in msg and "BUY" in msg and "3045.98" in msg and "SL" in msg
-    assert "/ambil" not in msg and "/skip" not in msg, "command teks harus hilang dari body (diganti tombol)"
+    assert "LIMIT" in msg and "2982" in msg and "3010" in msg
+    assert "/ambil" not in msg and "/skip" not in msg
     kb = alert_keyboard(42)
     btns = kb["inline_keyboard"][0]
     assert [b["callback_data"] for b in btns] == ["exec:42", "take:42", "skip:42"]
-    assert len(btns) == 3 and "Eksekusi" in btns[0]["text"]
-    print("[OK] telegram: format tanpa command + keyboard exec/take/skip nempel alert_id")
-    print(msg.encode("ascii", "replace").decode())   # ASCII-safe utk console Windows
+    assert "Limit" in btns[0]["text"]
+    print("[OK] telegram: single-TP limit alert")
+    print(msg.encode("ascii", "replace").decode())
 
 
 if __name__ == "__main__":
