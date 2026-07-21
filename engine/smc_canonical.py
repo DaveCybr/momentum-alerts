@@ -158,6 +158,63 @@ def poi_invalidated(h1, poi, bias):
     return bool((after["close"].values > dist).any())
 
 
+def swept_in_poi(m15, m5, bias, poi, p):
+    """§8: wick M5 melewati liquidity M15 saat harga di dalam POI H1.
+    Returns (swept, m5_bar_index_in_trigger_window, sweep_extreme)."""
+    if m15 is None or m5 is None or len(m15) < p["sweep_lookback"] or len(m5) < 3:
+        return (False, -1, 0.0)
+    sh, sl = ind.swings(m15, p["swing_k"])
+    win = m5.iloc[-p["trigger_lookback"]:]
+    lo_v, hi_v, cl_v = win["low"].values, win["high"].values, win["close"].values
+    zlo = min(poi["proximal"], poi["distal"])
+    zhi = max(poi["proximal"], poi["distal"])
+    for i in range(len(win)):
+        if not (lo_v[i] <= zhi and hi_v[i] >= zlo):
+            continue
+        if bias == "bullish":
+            pools = [float(m15["low"].loc[j]) for j in sl[sl].index]
+            if not pools: continue
+            pool = pools[-1]
+            if lo_v[i] < pool and cl_v[i] > pool:
+                return (True, i, float(lo_v[i]))
+        else:
+            pools = [float(m15["high"].loc[j]) for j in sh[sh].index]
+            if not pools: continue
+            pool = pools[-1]
+            if hi_v[i] > pool and cl_v[i] < pool:
+                return (True, i, float(hi_v[i]))
+    return (False, -1, 0.0)
+
+
+def mss_after_sweep(m5, bias, sweep_bar, p):
+    """§9-10: displacement setelah sweep memecah structural swing M5 pra-sweep + FVG.
+    Returns (confirmed, entry_50pct, (fvg_lo, fvg_hi))."""
+    win = m5.iloc[-p["trigger_lookback"]:]
+    n = len(win)
+    if sweep_bar < 0 or sweep_bar >= n:
+        return (False, 0.0, (0.0, 0.0))
+    highs, lows = _last_swings(win, p["swing_k"])
+    pre_h = [h for h in highs if h + p["swing_k"] < sweep_bar]
+    pre_l = [l for l in lows if l + p["swing_k"] < sweep_bar]
+    disp = ind.displacement(win, body_ratio=p["disp_body_ratio"],
+                            atr_mult=p["disp_atr_mult"], atr_period=p["atr_period"])
+    hv, lv, cv = win["high"].values, win["low"].values, win["close"].values
+    fvgs = ind.fvg_zones(win, bull=(bias == "bullish"))
+    for i in range(sweep_bar + 1, n):
+        s = int(disp.iloc[i])
+        if bias == "bullish" and s > 0 and pre_h and cv[i] > hv[pre_h[-1]]:
+            zs = [z for z in fvgs if z[0] <= i + 1 and z[0] >= sweep_bar]
+            if zs:
+                _, flo, fhi, mid = zs[-1]
+                return (True, float(mid), (float(flo), float(fhi)))
+        if bias == "bearish" and s < 0 and pre_l and cv[i] < lv[pre_l[-1]]:
+            zs = [z for z in fvgs if z[0] <= i + 1 and z[0] >= sweep_bar]
+            if zs:
+                _, flo, fhi, mid = zs[-1]
+                return (True, float(mid), (float(flo), float(fhi)))
+    return (False, 0.0, (0.0, 0.0))
+
+
 def _mk(rows, freq="5min"):
     idx = pd.date_range("2026-01-05 08:00", periods=len(rows), freq=freq, tz="UTC")
     df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
@@ -222,6 +279,31 @@ def demo():
     inv.loc[ts_inv] = [100, 100, poi["distal"] - 2, poi["distal"] - 1, 1000.0]
     assert poi_invalidated(inv, poi, "bullish")
     print("[OK] find_poi + fresh + distal invalidation")
+
+    # Sweep di dalam POI + MSS memecah swing pra-sweep
+    m15s = [(100, 100.6, 99.7, 100)] * 25
+    m15s[10] = (100, 100.5, 99.0, 100)
+    m15b = _mk(m15s, "15min")
+    poi2 = {"proximal": 100.2, "distal": 98.8, "origin_idx": 0}
+    m5s = [(100, 100.4, 99.6, 99.9)] * 19
+    m5s += [(100, 100.4, 99.6, 99.9)]                 # win[0]
+    m5s += [(100, 100.4, 99.6, 99.9)]                 # win[1]
+    m5s += [(100, 101.5, 100, 101.5)]                 # win[2]: swing high
+    m5s += [(101.5, 101.3, 101.0, 101.2)]            # win[3]
+    m5s += [(101.2, 101.0, 100.5, 100.6)]            # win[4]
+    m5s += [(100.5, 100.8, 100.2, 100.3)]            # win[5]
+    m5s += [(99.9, 100.2, 98.5, 100.1)]              # win[6]: sweep
+    m5s += [(100.1, 100.2, 99.9, 100.15)]            # win[7]
+    m5s += [(100.15, 102.5, 100.1, 102.3)]           # win[8]: displacement, close > swing high
+    m5s += [(102.3, 102.6, 102.0, 102.4)]            # win[9]: FVG + follow-through
+    m5s += [(102.4, 102.5, 102.1, 102.3)]
+    m5s += [(102.3, 102.7, 102.2, 102.6)]
+    m5b = _mk(m5s, "5min")
+    sw, bar, ext = swept_in_poi(m15b, m5b, "bullish", poi2, p)
+    assert sw and ext <= 98.5, (sw, bar, ext)
+    ok_ms, entry50, (flo, fhi) = mss_after_sweep(m5b, "bullish", bar, p)
+    assert ok_ms and flo < entry50 < fhi, (ok_ms, entry50, flo, fhi)
+    print("[OK] sweep-in-POI + MSS pre-sweep swing + 50% FVG")
 
 
 if __name__ == "__main__":
