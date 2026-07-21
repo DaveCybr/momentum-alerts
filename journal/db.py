@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS ai_grades (
     ts_wib         TEXT NOT NULL,
     FOREIGN KEY(alert_id) REFERENCES alerts(id)
 );
+
+CREATE TABLE IF NOT EXISTS smc_state (
+    symbol     TEXT PRIMARY KEY,
+    state      TEXT NOT NULL,
+    data_json  TEXT,
+    updated_at TEXT
+);
 """
 
 
@@ -80,12 +87,27 @@ class Journal:
 
     def _migrate(self, c):
         """Kolom baru utk DB lama (CREATE IF NOT EXISTS tak menambah kolom). Idempoten."""
-        for stmt in ("ALTER TABLE alerts ADD COLUMN ticket INTEGER",
-                     "ALTER TABLE outcomes ADD COLUMN profit REAL"):
+        stmts = (
+            "ALTER TABLE alerts ADD COLUMN ticket INTEGER",
+            "ALTER TABLE outcomes ADD COLUMN profit REAL",
+            "ALTER TABLE alerts ADD COLUMN entry_type TEXT",
+            "ALTER TABLE alerts ADD COLUMN rr_planned REAL",
+            "ALTER TABLE alerts ADD COLUMN risk_money REAL",
+            "ALTER TABLE alerts ADD COLUMN risk_pct REAL",
+            "ALTER TABLE alerts ADD COLUMN spread REAL",
+            "ALTER TABLE alerts ADD COLUMN lot REAL",
+            "ALTER TABLE alerts ADD COLUMN news_filter_applied INTEGER DEFAULT 0",
+            "ALTER TABLE alerts ADD COLUMN state_snapshot TEXT",
+            "ALTER TABLE outcomes ADD COLUMN result_r REAL",
+            "ALTER TABLE outcomes ADD COLUMN mae REAL",
+            "ALTER TABLE outcomes ADD COLUMN mfe REAL",
+            "ALTER TABLE outcomes ADD COLUMN classification TEXT",
+        )
+        for stmt in stmts:
             try:
                 c.execute(stmt)
             except sqlite3.OperationalError:
-                pass   # kolom sudah ada
+                pass
 
     def _c(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)
@@ -98,22 +120,30 @@ class Journal:
 
     # ── tulis ──
     def record(self, setup: Setup, candle_id: str, strategy: str, version: str,
-               sent: bool, suppress: str | None = None, ts: str | None = None) -> int:
+               sent: bool, suppress: str | None = None, ts: str | None = None,
+               news_filter_applied: int = 0, state_snapshot: str | None = None,
+               symbol_ovr: str | None = None) -> int:
+        sym = symbol_ovr or setup.symbol
         with self._c() as c:
             cur = c.execute(
                 """INSERT INTO alerts(ts_wib,symbol,direction,tf,candle_id,strategy,version,
-                       tier,score,entry_low,entry_high,sl,tp_json,rr,reason,gates_json,sent,suppress,status)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (ts or wib_str(), setup.symbol, setup.direction, setup.tf, candle_id, strategy, version,
+                       tier,score,entry_low,entry_high,sl,tp_json,rr,reason,gates_json,sent,suppress,status,
+                       entry_type,rr_planned,risk_money,risk_pct,spread,lot,news_filter_applied,state_snapshot)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (ts or wib_str(), sym, setup.direction, setup.tf, candle_id, strategy, version,
                  setup.tier, setup.score, setup.entry_low, setup.entry_high, setup.sl,
                  json.dumps(setup.tp), setup.rr, setup.reason, json.dumps(setup.gates),
-                 1 if sent else 0, suppress, "ACTIVE" if sent else "CLOSED"))
+                 1 if sent else 0, suppress, "ACTIVE" if sent else "CLOSED",
+                 getattr(setup, "entry_type", "LIMIT"), getattr(setup, "rr_planned", 0.0),
+                 getattr(setup, "risk_money", 0.0), getattr(setup, "risk_pct", 0.0),
+                 getattr(setup, "spread", 0.0), getattr(setup, "lot", 0.0),
+                 int(news_filter_applied), state_snapshot))
             return cur.lastrowid
 
     def label_outcome(self, alert_id: int, result: str, hit: str, exit_price: float,
                       profit: float | None = None):
         with self._c() as c:
-            c.execute("INSERT OR REPLACE INTO outcomes VALUES(?,?,?,?,?,?)",
+            c.execute("INSERT OR REPLACE INTO outcomes(alert_id,result,hit,exit_price,exit_ts_wib,profit) VALUES(?,?,?,?,?,?)",
                       (alert_id, result, hit, exit_price, wib_str(), profit))
             c.execute("UPDATE alerts SET status='CLOSED' WHERE id=?", (alert_id,))
 
@@ -162,10 +192,10 @@ class Journal:
             c.execute("INSERT OR REPLACE INTO tags VALUES(?,?,?)", (alert_id, taken, wib_str()))
 
     # ── baca (dipakai alert engine & monitor) ──
-    def candle_sent(self, candle_id: str, direction: str) -> bool:
+    def candle_sent(self, symbol: str, candle_id: str, direction: str) -> bool:
         with self._c() as c:
-            r = c.execute("SELECT 1 FROM alerts WHERE candle_id=? AND direction=? AND sent=1 LIMIT 1",
-                          (candle_id, direction)).fetchone()
+            r = c.execute("SELECT 1 FROM alerts WHERE symbol=? AND candle_id=? AND direction=? AND sent=1 LIMIT 1",
+                          (symbol, candle_id, direction)).fetchone()
             return r is not None
 
     def sent_today(self, symbol: str, ref=None) -> int:
@@ -220,6 +250,55 @@ class Journal:
             r = c.execute("SELECT value FROM config_kv WHERE key=?", (key,)).fetchone()
             return r["value"] if r else default
 
+    # ── SMC state ──
+    def save_state(self, symbol: str, state: str, data_json: str):
+        with self._c() as c:
+            c.execute("INSERT OR REPLACE INTO smc_state VALUES(?,?,?,?)",
+                      (symbol, state, data_json, wib_str()))
+
+    def load_state(self, symbol: str) -> tuple[str, str | None]:
+        with self._c() as c:
+            r = c.execute("SELECT state, data_json FROM smc_state WHERE symbol=?", (symbol,)).fetchone()
+            return (r["state"], r["data_json"]) if r else ("IDLE", None)
+
+    # ── pending/fill lifecycle ──
+    def set_status(self, alert_id: int, status: str):
+        with self._c() as c:
+            c.execute("UPDATE alerts SET status=? WHERE id=?", (status, int(alert_id)))
+
+    def pending_alerts(self):
+        with self._c() as c:
+            return c.execute("SELECT * FROM alerts WHERE status='PENDING' AND ticket IS NOT NULL").fetchall()
+
+    def open_or_shadow(self):
+        with self._c() as c:
+            return c.execute("SELECT * FROM alerts WHERE sent IN (0,1) AND status='ACTIVE' AND ticket IS NULL").fetchall()
+
+    # ── outcome dengan metadata ──
+    def record_outcome_r(self, alert_id: int, result: str, hit: str, exit_price: float,
+                         profit: float | None = None, result_r: float | None = None,
+                         mae: float | None = None, mfe: float | None = None,
+                         classification: str | None = None):
+        with self._c() as c:
+            c.execute("""INSERT OR REPLACE INTO outcomes
+                         (alert_id,result,hit,exit_price,exit_ts_wib,profit,result_r,mae,mfe,classification)
+                         VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                      (alert_id, result, hit, exit_price, wib_str(), profit, result_r, mae, mfe, classification))
+            c.execute("UPDATE alerts SET status='CLOSED' WHERE id=?", (alert_id,))
+
+    # ── daily stats ──
+    def daily_counts(self, day_prefix: str) -> dict:
+        """day_prefix like '21/07/2026'. Returns dict(losses, trades, net_r) for filled trades."""
+        with self._c() as c:
+            rows = c.execute("""SELECT o.result, o.result_r FROM outcomes o
+                                JOIN alerts a ON a.id=o.alert_id
+                                WHERE a.ticket IS NOT NULL AND a.ts_wib LIKE ?""",
+                             (day_prefix + "%",)).fetchall()
+        losses = sum(1 for r in rows if r["result"] == "LOSS")
+        trades = len(rows)
+        net_r = sum(float(r["result_r"] or 0.0) for r in rows)
+        return {"losses": losses, "trades": trades, "net_r": round(net_r, 2)}
+
 
 def demo():
     import tempfile, os
@@ -233,8 +312,8 @@ def demo():
               "test", {"regime": "BULL"})
     aid = j.record(s, candle_id="C1", strategy="trend_pullback", version="0.1", sent=True)
     assert aid == 1
-    assert j.candle_sent("C1", "BUY") is True
-    assert j.candle_sent("C1", "SELL") is False
+    assert j.candle_sent("XAUUSD", "C1", "BUY") is True
+    assert j.candle_sent("XAUUSD", "C1", "SELL") is False
     assert j.sent_today("XAUUSD") == 1
     j.record(s, candle_id="C2", strategy="tp", version="0.1", sent=False, suppress="cooldown")
     assert j.sent_today("XAUUSD") == 1, "suppressed tidak dihitung ke cap"
@@ -265,6 +344,23 @@ def demo():
     assert j.shadow_graded("SHDW1", "BUY"), "sudah ada shadow → True"
     assert not j.shadow_graded("SHDW1", "SELL"), "arah beda → False"
     print("[OK] journal: record/dedup/cap/outcome/tag + executed + AI grade join + shadow dedup jalan")
+
+    # symbol-aware dedup: XAU dan BTC candle sama tidak saling suppress
+    a3 = j.record(s, candle_id="CDUP", strategy="smc_canonical", version="1.0", sent=True, symbol_ovr="XAUUSD.vx")
+    assert j.candle_sent("XAUUSD.vx", "CDUP", "BUY")
+    assert not j.candle_sent("BTCUSD.vx", "CDUP", "BUY")
+    # state persistence
+    j.save_state("XAUUSD.vx", "SWEPT", '{"sweep_extreme": 2990.0}')
+    st, blob = j.load_state("XAUUSD.vx")
+    assert st == "SWEPT" and blob and "2990" in blob
+    # set_status + pending_alerts
+    j.set_ticket(a3, 777)
+    j.set_status(a3, "PENDING")
+    assert len(j.pending_alerts()) == 1
+    # daily_counts
+    dc = j.daily_counts("21/07/2026")
+    assert dc["losses"] >= 0 and dc["trades"] >= 0
+    print("[OK] journal: symbol dedup + state + status + daily stats")
 
 
 if __name__ == "__main__":
