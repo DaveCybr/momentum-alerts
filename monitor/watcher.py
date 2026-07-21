@@ -96,11 +96,11 @@ def pending_lifecycle(direction: str, entry: float, sl: float, target: float,
 
 
 def run_pass(journal: Journal, cfg: dict) -> int:
-    """Cek semua alert terbuka vs harga (per-simbol). Return jumlah yang ditutup."""
+    """Cek semua alert terbuka vs harga (per-simbol). Termasuk shadow sent=0."""
     from data.sources import fetch_price
     closed = 0
     price_cache: dict[str, float] = {}
-    for a in journal.open_alerts():
+    for a in journal.open_or_shadow():
         sym = a["symbol"]
         if sym not in price_cache:
             price_cache[sym] = fetch_price(cfg["data"], sym)
@@ -173,6 +173,44 @@ def check_deadman(journal: Journal, cfg_sched: dict, tg_cfg: dict, now: datetime
                   f"(heartbeat terakhir {hb}). Cek bridge/proses.", tg_cfg)
     journal.cfg_set("deadman_last", wib_str(now))
     return True
+
+
+def daily_stop_hit(journal, cfg, now):
+    ds = cfg.get("execution", {}).get("daily_stop", {})
+    day = now.strftime("%d/%m/%Y")
+    dc = journal.daily_counts(day)
+    if dc["losses"] >= int(ds.get("max_losses", 2)):
+        return True, f"{dc['losses']} loss"
+    if dc["trades"] >= int(ds.get("max_trades", 3)):
+        return True, f"{dc['trades']} trade"
+    if dc["net_r"] >= float(ds.get("target_r", 2.5)):
+        return True, f"+{dc['net_r']}R"
+    return False, ""
+
+
+def manage_pending(journal, cfg):
+    """§11: fill detection + auto-cancel pending limits."""
+    from data import sources
+    from execute import broker
+    rows = journal.pending_alerts()
+    if not rows:
+        return 0
+    n = 0
+    with sources.MT5_LOCK:
+        m = sources._connect(cfg["data"]["mt5"])
+        for a in rows:
+            tk = int(a["ticket"])
+            pos = m.positions_get(ticket=tk)
+            if pos and len(pos) > 0:
+                journal.set_status(a["id"], "FILLED")
+                n += 1
+                continue
+            orders = m.orders_get(ticket=tk)
+            if not orders:
+                journal.record_outcome_r(a["id"], "CANCELLED", "EXPIRED", float(a["entry_high"]),
+                                         classification="Cancelled setup")
+                n += 1
+    return n
 
 
 # ── Trailing stop chandelier (pengganti TP3 keras) — fungsi murni, testable tanpa MT5 ──
@@ -354,6 +392,17 @@ def demo():
                           fut([(3010, 3012, 3008, 3011)] * 3))
     assert r[0] == "CANCELLED" and "kedaluwarsa" in r[1], f"harus kedaluwarsa, dapat {r}"
     print("[OK] pending_lifecycle: FILLED / batal target / batal sweep / kedaluwarsa (§11)")
+
+    # daily_stop_hit
+    class FakeJ:
+        def __init__(self, dc): self._dc = dc
+        def daily_counts(self, _day): return self._dc
+    cfg2 = {"execution": {"daily_stop": {"max_losses": 2, "max_trades": 3, "target_r": 2.5}}}
+    assert daily_stop_hit(FakeJ({"losses": 2, "trades": 2, "net_r": -1.0}), cfg2, now_wib())[0]
+    assert daily_stop_hit(FakeJ({"losses": 0, "trades": 3, "net_r": 0.5}), cfg2, now_wib())[0]
+    assert daily_stop_hit(FakeJ({"losses": 1, "trades": 2, "net_r": 2.5}), cfg2, now_wib())[0]
+    assert not daily_stop_hit(FakeJ({"losses": 1, "trades": 2, "net_r": 1.0}), cfg2, now_wib())[0]
+    print("[OK] daily_stop_hit thresholds")
 
 
 if __name__ == "__main__":
