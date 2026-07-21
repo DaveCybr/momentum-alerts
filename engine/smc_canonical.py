@@ -95,6 +95,69 @@ def pd_zone(price, lo, hi):
     return "equilibrium"
 
 
+def find_poi(h1, bias, lo, hi, p):
+    """§6: OB H1 dengan FVG dari displacement sama, di sisi P/D yang benar, fresh.
+    Returns dict(proximal, distal, origin_idx) atau None.
+    Bullish: proximal=OB high (tutup terbentuk sebelum displacement), distal=OB low.
+    Bearish: kebalik."""
+    win = h1.iloc[-p["poi_lookback"]:] if len(h1) > p["poi_lookback"] else h1
+    o, c = win["open"].values, win["close"].values
+    hv, lv = win["high"].values, win["low"].values
+    disp = ind.displacement(win, body_ratio=p["disp_body_ratio"],
+                            atr_mult=p["disp_atr_mult"], atr_period=p["atr_period"])
+    fvg = ind.fvg_zones(win, bull=(bias == "bullish"))
+    fvg_by_idx = {z[0]: z for z in fvg}
+    best = None
+    for i in range(2, len(win)):
+        s = int(disp.iloc[i])
+        want = 1 if bias == "bullish" else -1
+        if s != want:
+            continue
+        if i not in fvg_by_idx and (i + 1) not in fvg_by_idx:
+            continue
+        j = i - 1
+        while j >= 0:
+            opp = (c[j] < o[j]) if bias == "bullish" else (c[j] > o[j])
+            if opp:
+                break
+            j -= 1
+        if j < 0:
+            continue
+        if bias == "bullish":
+            prox, dist = float(hv[j]), float(lv[j])
+            mid = (dist + prox) / 2
+            if pd_zone(mid, lo, hi) != "discount":
+                continue
+        else:
+            prox, dist = float(lv[j]), float(hv[j])
+            mid = (dist + prox) / 2
+            if pd_zone(mid, lo, hi) != "premium":
+                continue
+        best = {"proximal": prox, "distal": dist, "origin_idx": int(j)}
+    return best
+
+
+def poi_fresh(h1, poi):
+    """§6: fresh = belum ada close masuk kembali ke zona POI sejak pembentukan."""
+    idx = poi["origin_idx"]
+    after = h1.iloc[idx + 3:] if len(h1) > idx + 3 else h1.iloc[len(h1):]
+    zlo, zhi = sorted([poi["proximal"], poi["distal"]])
+    for _, r in after.iterrows():
+        if zlo <= float(r["close"]) <= zhi:
+            return False
+    return True
+
+
+def poi_invalidated(h1, poi, bias):
+    """§6: invalid jika H1 close menembus distal edge."""
+    idx = poi["origin_idx"]
+    after = h1.iloc[idx + 1:]
+    dist = poi["distal"]
+    if bias == "bullish":
+        return bool((after["close"].values < dist).any())
+    return bool((after["close"].values > dist).any())
+
+
 def _mk(rows, freq="5min"):
     idx = pd.date_range("2026-01-05 08:00", periods=len(rows), freq=freq, tz="UTC")
     df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
@@ -142,6 +205,23 @@ def demo():
     assert pd_zone(lo + 0.9 * (hi - lo), lo, hi) == "premium"
     assert pd_zone(lo + 0.5 * (hi - lo), lo, hi) == "equilibrium"
     print("[OK] dealing_range anchored + pd_zone")
+
+    # POI H1 dengan OB+FVG bullish
+    poi_src = [(100.5, 100.6, 99.0, 99.2),           # bearish base (OB origin), di discount
+               (99.2, 103.5, 99.2, 103.3),            # displacement up
+               (103.3, 104.0, 103.1, 103.8)]          # gap: high[0]=100.6 < low[2]=103.1 → FVG
+    fill = [(100, 100.3, 99.7, 100)] * 10
+    rows_poi = fill + poi_src
+    df_poi = _mk(rows_poi, "1h")
+    lo2, hi2 = 97.0, 104.0
+    poi = find_poi(df_poi, "bullish", lo2, hi2, p)
+    assert poi is not None and poi["proximal"] > poi["distal"], poi
+    assert poi_fresh(df_poi, poi)
+    inv = df_poi.copy()
+    ts_inv = inv.index[-1] + (inv.index[-1] - inv.index[-2])
+    inv.loc[ts_inv] = [100, 100, poi["distal"] - 2, poi["distal"] - 1, 1000.0]
+    assert poi_invalidated(inv, poi, "bullish")
+    print("[OK] find_poi + fresh + distal invalidation")
 
 
 if __name__ == "__main__":
