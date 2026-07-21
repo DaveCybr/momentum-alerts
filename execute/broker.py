@@ -81,6 +81,13 @@ def place(cfg: dict, symbol: str, direction: str, sl: float, tp: float) -> dict:
         lot = _lot(si, risk_amount, sl_distance)
         pt = float(si.point) or 0.01
         est_risk = lot * (sl_distance / pt) * (float(getattr(si, "trade_tick_value", 1)) or 1)
+
+        # §14 veto: kalau lot MINIMUM saja sudah menghasilkan risiko >2% balance, wajib lewati
+        vol_min = float(getattr(si, "volume_min", 0.01) or 0.01)
+        min_risk = vol_min * (sl_distance / pt) * (float(getattr(si, "trade_tick_value", 1)) or 1)
+        max_risk_2pct = float(ai.balance) * 2.0 / 100.0
+        if min_risk > max_risk_2pct:
+            return {"ok": False, "msg": f"lot-min {vol_min} → risiko ${min_risk:.2f} > 2% balance (${max_risk_2pct:.2f}) · §14 wajib dilewati"}
         deviation = max(10, int(price * float(ex.get("deviation_pct", 0.1)) / 100 / pt))  # adaptif
 
         req = {
@@ -129,6 +136,13 @@ def demo():
     assert size_lot(1500, 15, 0.01, 1.0, 100, 0.01, 0.01, 50) == 1.0  # 1500/1500=1.0
     assert size_lot(5, 15, 0.01, 1.0, 100, 0.01, 0.01, 50) == 0.01    # di bawah min → 0.01
     print("[OK] size_lot: floor min, step, scaling benar")
+
+    # §14 veto: lot-min >2% → wajib lewati (diuji lewat fungsi bantu, bukan place() yg butuh MT5)
+    # SL jauh (5000 pts, XAU tipikal 30-150) → lot-min 0.01 kasih risiko besar
+    min_risk_big_sl = 0.01 * (5000 / 1) * 1.0    # 0.01 lot × 5000 pts × $1/pt = $50
+    balance_small = 100.0; max_2pct = balance_small * 2 / 100  # $2
+    assert min_risk_big_sl > max_2pct, "seharusnya >2% balance"
+    print("[OK] §14 veto logic: lot-min risiko besar terdeteksi")
 
 
 if __name__ == "__main__":

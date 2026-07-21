@@ -16,7 +16,8 @@ import pandas as pd
 from engine.models import Bundle
 
 _OHLCV = ["open", "high", "low", "close", "volume"]
-_TF = {"M30": "TIMEFRAME_M30", "H1": "TIMEFRAME_H1", "H4": "TIMEFRAME_H4", "D1": "TIMEFRAME_D1"}
+_TF = {"M5": "TIMEFRAME_M5", "M15": "TIMEFRAME_M15", "M30": "TIMEFRAME_M30",
+       "H1": "TIMEFRAME_H1", "H4": "TIMEFRAME_H4", "D1": "TIMEFRAME_D1"}
 _state = {"m": None}
 
 # Satu koneksi RPyC dibagi thread scheduler/monitor/telegram → serialisasi biar tak interleave.

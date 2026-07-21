@@ -33,6 +33,68 @@ def outcome_for(alert_row, price: float):
     return None
 
 
+def simulate_outcome(alert_row, future) -> tuple[str, str, float, int] | None:
+    """Simulasi outcome shadow candidate dgn menelusuri candle M5 ke DEPAN (backtest/forward).
+    Return (result, hit, exit_price, bars_held) atau None kalau belum terminal di akhir data.
+
+    KEPUTUSAN PENTING (kejujuran korelasi #4): dalam SATU candle, high & low dua-duanya bisa
+    kena SL dan TP — urutan tak diketahui dari OHLC. Kupakai PESIMIS (SL-duluan) biar win-rate
+    tak menggelembung palsu; lebih baik under-estimate daripada menipu sinyal AI.
+      future = DataFrame OHLC (index waktu) SETELAH candle sinyal, urut lama→baru."""
+    d = alert_row["direction"]
+    sl = float(alert_row["sl"])
+    tp = json.loads(alert_row["tp_json"])
+    for i, (_, c) in enumerate(future.iterrows()):
+        hi, lo = float(c["high"]), float(c["low"])
+        if d == "BUY":
+            if lo <= sl:                                    # pesimis: cek SL dulu
+                return ("LOSS", "SL", sl, i + 1)
+            if hi >= tp[0]:
+                lvl = 2 if hi >= tp[2] else 1 if hi >= tp[1] else 0
+                return ("WIN", f"TP{lvl + 1}", tp[lvl], i + 1)
+        else:  # SELL
+            if hi >= sl:
+                return ("LOSS", "SL", sl, i + 1)
+            if lo <= tp[0]:
+                lvl = 2 if lo <= tp[2] else 1 if lo <= tp[1] else 0
+                return ("WIN", f"TP{lvl + 1}", tp[lvl], i + 1)
+    return None
+
+
+def pending_lifecycle(direction: str, entry: float, sl: float, target: float,
+                      fvg_lo: float, fvg_hi: float, future, max_candles: int = 3) -> tuple[str, str, int]:
+    """Keputusan lifecycle pending limit order 50% FVG (§11) — fungsi murni, testable.
+    Telusuri candle M5 SETELAH MSS. Return (state, reason, bar) di mana state:
+      'FILLED'    — harga retrace menyentuh 50% FVG (entry) sebelum invalidasi
+      'CANCELLED' — batal karena aturan §11
+      'PENDING'   — belum terisi & belum batal di akhir data
+    Prioritas cek per candle (§11 'masa berlaku entry'):
+      1. target likuiditas tersentuh sebelum entry → CANCELLED (peluang lewat)
+      2. sweep extreme (sisi SL) ditembus sebelum entry → CANCELLED (invalidasi)
+      3. harga sentuh 50% FVG → FILLED
+      4. lewat max_candles candle tanpa terisi → CANCELLED (kedaluwarsa)"""
+    is_buy = direction == "BUY"
+    for i, (_, c) in enumerate(future.iterrows()):
+        hi, lo = float(c["high"]), float(c["low"])
+        if is_buy:
+            if hi >= target:
+                return ("CANCELLED", "target tersentuh sebelum entry", i + 1)
+            if lo <= sl:
+                return ("CANCELLED", "sweep extreme ditembus sebelum entry", i + 1)
+            if lo <= entry:                                  # retrace turun ke 50% FVG
+                return ("FILLED", "retrace ke 50% FVG", i + 1)
+        else:
+            if lo <= target:
+                return ("CANCELLED", "target tersentuh sebelum entry", i + 1)
+            if hi >= sl:
+                return ("CANCELLED", "sweep extreme ditembus sebelum entry", i + 1)
+            if hi >= entry:                                  # retrace naik ke 50% FVG
+                return ("FILLED", "retrace ke 50% FVG", i + 1)
+        if i + 1 >= max_candles:
+            return ("CANCELLED", f"kedaluwarsa {max_candles} candle M5", i + 1)
+    return ("PENDING", "belum terisi", len(future))
+
+
 def run_pass(journal: Journal, cfg: dict) -> int:
     """Cek semua alert terbuka vs harga (per-simbol). Return jumlah yang ditutup."""
     from data.sources import fetch_price
@@ -256,6 +318,42 @@ def demo():
     assert outcome_for(sell, 3110) == ("LOSS", "SL")
     assert outcome_for(sell, 2940) == ("WIN", "TP3")
     print("[OK] monitor outcome: BUY & SELL, SL/TP1/TP2/TP3 benar")
+
+    # simulate_outcome: telusuri candle ke depan
+    import pandas as pd
+    def fut(rows):
+        return pd.DataFrame(rows, columns=["open", "high", "low", "close"],
+                            index=pd.date_range("2026-01-01", periods=len(rows), freq="5min"))
+    buy2 = Row(direction="BUY", sl=2961.0, tp_json=json.dumps([3046.0, 3097.0, 3165.0]))
+    # candle 1 kalem, candle 2 sentuh TP1
+    r = simulate_outcome(buy2, fut([(3000, 3010, 2990, 3005), (3005, 3050, 3000, 3048)]))
+    assert r == ("WIN", "TP1", 3046.0, 2), r
+    # PESIMIS: satu candle yg sentuh SL DAN TP2 → harus LOSS (SL duluan), bukan WIN
+    r = simulate_outcome(buy2, fut([(3000, 3100, 2955, 3050)]))
+    assert r == ("LOSS", "SL", 2961.0, 1), f"pesimis harus SL-duluan, dapat {r}"
+    # belum terminal → None
+    assert simulate_outcome(buy2, fut([(3000, 3010, 2990, 3005)])) is None
+    # SELL: candle sentuh TP1 turun
+    sell2 = Row(direction="SELL", sl=3100.0, tp_json=json.dumps([3050.0, 3000.0, 2950.0]))
+    r = simulate_outcome(sell2, fut([(3080, 3090, 3040, 3045)]))
+    assert r == ("WIN", "TP1", 3050.0, 1), r
+    print("[OK] simulate_outcome: forward-walk + pesimis SL-duluan benar")
+
+    # pending_lifecycle §11: BUY entry=3000 (50% FVG), sl=2980, target=3080, zona FVG 2995-3005
+    # FILLED: candle retrace turun ke 3000 sebelum invalidasi
+    r = pending_lifecycle("BUY", 3000, 2980, 3080, 2995, 3005, fut([(3010, 3012, 2999, 3005)]))
+    assert r[0] == "FILLED", f"harus FILLED, dapat {r}"
+    # CANCELLED target: candle sentuh target 3080 sebelum retrace ke entry
+    r = pending_lifecycle("BUY", 3000, 2980, 3080, 2995, 3005, fut([(3010, 3085, 3008, 3080)]))
+    assert r[0] == "CANCELLED" and "target" in r[1], f"harus batal-target, dapat {r}"
+    # CANCELLED sweep: candle tembus sl 2980 sebelum entry
+    r = pending_lifecycle("BUY", 3000, 2980, 3080, 2995, 3005, fut([(3010, 3011, 2975, 2978)]))
+    assert r[0] == "CANCELLED" and "sweep" in r[1], f"harus batal-sweep, dapat {r}"
+    # CANCELLED kedaluwarsa: 3 candle tak terisi (harga nggak turun ke 3000)
+    r = pending_lifecycle("BUY", 3000, 2980, 3080, 2995, 3005,
+                          fut([(3010, 3012, 3008, 3011)] * 3))
+    assert r[0] == "CANCELLED" and "kedaluwarsa" in r[1], f"harus kedaluwarsa, dapat {r}"
+    print("[OK] pending_lifecycle: FILLED / batal target / batal sweep / kedaluwarsa (§11)")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,23 @@ CREATE TABLE IF NOT EXISTS tags (
     FOREIGN KEY(alert_id) REFERENCES alerts(id)
 );
 CREATE TABLE IF NOT EXISTS config_kv (key TEXT PRIMARY KEY, value TEXT);
+
+-- AI grade LOG-ONLY (task #3). alert_id join ke alerts→outcomes buat korelasi #4.
+-- gates_passed = skor pre-screen deterministik (0-7); ai_checklist_json = jawaban mentah AI;
+-- ai_grade = grade turunan KODE dari checklist AI. Simpan keduanya biar #4 ukur flip DAN outcome.
+CREATE TABLE IF NOT EXISTS ai_grades (
+    alert_id       INTEGER PRIMARY KEY,
+    ok             INTEGER NOT NULL,        -- 1=AI jawab valid, 0=gagal (error direkam)
+    ai_grade       TEXT,                    -- A+ | B | skip (derive_grade dari checklist AI)
+    gates_passed   INTEGER,                 -- skor pre-screen deterministik (0-7)
+    fired          INTEGER,                 -- 1 kalau pre-screen fire penuh (7/7 + sesi)
+    ai_checklist_json TEXT,                 -- jawaban boolean mentah AI
+    model          TEXT,
+    latency_ms     INTEGER,
+    error          TEXT,
+    ts_wib         TEXT NOT NULL,
+    FOREIGN KEY(alert_id) REFERENCES alerts(id)
+);
 """
 
 
@@ -99,6 +116,39 @@ class Journal:
             c.execute("INSERT OR REPLACE INTO outcomes VALUES(?,?,?,?,?,?)",
                       (alert_id, result, hit, exit_price, wib_str(), profit))
             c.execute("UPDATE alerts SET status='CLOSED' WHERE id=?", (alert_id,))
+
+    def record_grade(self, alert_id: int, g: dict, gates_passed: int | None = None,
+                     fired: bool | None = None):
+        """Catat hasil AI grader (LOG-ONLY). g = output ai.grader.call_grader().
+        Idempoten per alert_id (INSERT OR REPLACE)."""
+        with self._c() as c:
+            c.execute("INSERT OR REPLACE INTO ai_grades VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (alert_id, 1 if g.get("ok") else 0, g.get("grade"), gates_passed,
+                       (1 if fired else 0) if fired is not None else None,
+                       json.dumps(g.get("checklist")) if g.get("checklist") else None,
+                       g.get("model"), g.get("latency_ms"), g.get("error"), wib_str()))
+
+    def shadow_graded(self, candle_id: str, direction: str) -> bool:
+        """Sudah ada shadow-grade smc_shadow di candle+arah ini? Dedup log-only:
+        shadow row sent=0 (candle_sent cuma cek sent=1), jadi butuh query sendiri
+        biar tick berulang di candle sama tak spam AI call + baris duplikat."""
+        with self._c() as c:
+            r = c.execute("""SELECT 1 FROM alerts WHERE candle_id=? AND direction=?
+                             AND strategy='smc_shadow' LIMIT 1""",
+                          (candle_id, direction)).fetchone()
+            return r is not None
+
+    def grade_outcome_join(self):
+        """Task #4: gabung AI grade + outcome untuk ukur korelasi grade↔hasil.
+        Hanya baris yg AI-nya ok DAN sudah punya outcome."""
+        with self._c() as c:
+            return c.execute(
+                """SELECT g.ai_grade, g.gates_passed, g.fired, o.result, o.hit, o.profit,
+                          a.symbol, a.direction, a.rr
+                   FROM ai_grades g
+                   JOIN alerts a ON a.id = g.alert_id
+                   JOIN outcomes o ON o.alert_id = g.alert_id
+                   WHERE g.ok = 1""").fetchall()
 
     def set_ticket(self, alert_id: int, ticket: int):
         """Simpan ticket posisi broker saat alert dieksekusi → jembatan ke history deal.
@@ -199,7 +249,22 @@ def demo():
     assert [r["id"] for r in j.open_executed()] == [a2]
     j.label_outcome(a2, "WIN", "REAL", 3120.0, profit=82.8)
     assert len(j.open_executed()) == 0, "outcome riil menutup alert executed"
-    print("[OK] journal: record/dedup/cap/outcome/tag + jalur executed jalan")
+
+    # AI grade log-only + join korelasi (task #3/#4)
+    j.record_grade(aid, dict(ok=True, grade="A+", checklist={"h1_bias": "bullish"},
+                             model="ac-prod/x", latency_ms=8000), gates_passed=7, fired=True)
+    j.record_grade(a2, dict(ok=False, error="HTTP 429", model="ac-prod/x", latency_ms=120),
+                   gates_passed=5, fired=False)
+    rows = j.grade_outcome_join()
+    assert len(rows) == 1, "join hanya ambil AI ok=1 yg punya outcome"
+    assert rows[0]["ai_grade"] == "A+" and rows[0]["result"] == "WIN"
+
+    # shadow dedup: smc_shadow di candle+arah sama terdeteksi (cegah spam AI call tiap tick)
+    assert not j.shadow_graded("SHDW1", "BUY"), "belum ada shadow → False"
+    j.record(s, candle_id="SHDW1", strategy="smc_shadow", version="0.1", sent=False, suppress="shadow")
+    assert j.shadow_graded("SHDW1", "BUY"), "sudah ada shadow → True"
+    assert not j.shadow_graded("SHDW1", "SELL"), "arah beda → False"
+    print("[OK] journal: record/dedup/cap/outcome/tag + executed + AI grade join + shadow dedup jalan")
 
 
 if __name__ == "__main__":
