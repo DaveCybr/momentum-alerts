@@ -222,6 +222,109 @@ def _mk(rows, freq="5min"):
     return df
 
 
+def tp_target(h1, m15, bias, entry, p):
+    """§13: opposing liquidity terdekat. Prioritas: H1 external > M15 structural."""
+    cands = []
+    win1 = h1.iloc[-p["struct_lookback"]:] if len(h1) > p["struct_lookback"] else h1
+    sh1, sl1 = ind.swings(win1, p["swing_k"])
+    if bias == "bullish":
+        cands += [float(win1["high"].loc[i]) for i in sh1[sh1].index if float(win1["high"].loc[i]) > entry]
+    else:
+        cands += [float(win1["low"].loc[i]) for i in sl1[sl1].index if float(win1["low"].loc[i]) < entry]
+    if m15 is not None and len(m15) > p["swing_k"] * 2 + 2:
+        w15 = m15.iloc[-p["sweep_lookback"] * 4:] if len(m15) > p["sweep_lookback"] * 4 else m15
+        sh15, sl15 = ind.swings(w15, p["swing_k"])
+        if bias == "bullish":
+            cands += [float(w15["high"].loc[i]) for i in sh15[sh15].index if float(w15["high"].loc[i]) > entry]
+        else:
+            cands += [float(w15["low"].loc[i]) for i in sl15[sl15].index if float(w15["low"].loc[i]) < entry]
+    if not cands:
+        return None
+    return min(cands, key=lambda x: abs(x - entry))
+
+
+def build_plan(bias, entry, sweep_extreme, spread, target, p):
+    """§12-13: SL = sweep extreme -/+ 1x spread; single TP; min RR = rr_min."""
+    if target is None:
+        return None
+    buf = p["sl_spread_mult"] * max(spread, 0.0)
+    if bias == "bullish":
+        sl = sweep_extreme - buf
+        risk = entry - sl
+        reward = target - entry
+    else:
+        sl = sweep_extreme + buf
+        risk = sl - entry
+        reward = entry - target
+    if risk <= 0 or reward <= 0:
+        return None
+    rr = round(reward / risk, 2)
+    if rr < p["rr_min"]:
+        return None
+    return {"sl": round(sl, 3), "tp": [round(target, 3)], "rr": rr, "risk": round(risk, 3)}
+
+
+class SmcCanonical:
+    name = "smc_canonical"
+    version = "1.0"
+
+    def evaluate(self, bundle, params, state):
+        p = {**SMC_DEFAULTS, **(params or {})}
+        h1 = _closed(bundle.df("H1"))
+        m15 = _closed(bundle.df("M15"))
+        m5 = _closed(bundle.df("M5"))
+        if h1 is None or m5 is None or len(h1) < p["struct_lookback"] + 5 or len(m5) < 20:
+            return None, state
+        d = dict(state.data)
+        s = state.state
+
+        bias, bos, protected, bos_idx = detect_bias(h1, p)
+        direction_cfg = (params or {}).get("direction", "both")
+        if bias == "none" or not bos or not bias_alive(h1, bias, protected, bos_idx, p):
+            return None, SmcState(state.symbol, "IDLE", {})
+        if bias == "bearish" and direction_cfg == "long_only":
+            return None, SmcState(state.symbol, "IDLE", {})
+        lo, hi = dealing_range(h1, bias, protected)
+
+        poi = find_poi(h1, bias, lo, hi, p)
+        if poi is None or not poi_fresh(h1, poi) or poi_invalidated(h1, poi, bias):
+            return None, SmcState(state.symbol, "BIAS_OK", {"bias": bias})
+
+        swept, bar, extreme = swept_in_poi(m15, m5, bias, poi, p)
+        if not swept:
+            return None, SmcState(state.symbol, "POI_TAGGED", {"bias": bias, "poi": poi})
+
+        confirmed, entry50, (flo, fhi) = mss_after_sweep(m5, bias, bar, p)
+        if not confirmed:
+            return None, SmcState(state.symbol, "SWEPT", {"bias": bias, "poi": poi, "sweep_extreme": extreme})
+
+        target = tp_target(h1, m15, bias, entry50, p)
+        plan = build_plan(bias, entry50, extreme, 0.0, target, p)
+        if plan is None:
+            return None, SmcState(state.symbol, "SWEPT", {"bias": bias, "poi": poi, "sweep_extreme": extreme})
+
+        in_sess = in_session(m5.index[-1], p["sessions_utc"], p["server_utc_offset"])
+        if p["require_session"] and not in_sess:
+            return None, SmcState(state.symbol, "MSS_CONFIRMED", {"bias": bias, "poi": poi, "sweep_extreme": extreme, "entry": entry50})
+
+        direction = "BUY" if bias == "bullish" else "SELL"
+        rr = plan["rr"]
+        tier = "HIGH_CONF" if rr >= p["rr_aplus"] else "NORMAL"
+        setup = Setup(
+            symbol=bundle.symbol, direction=direction, tf="M5",
+            entry_low=round(flo, 3), entry_high=round(fhi, 3),
+            entry=round(entry50, 3), sl=plan["sl"], tp=plan["tp"],
+            tier=tier, score=7, rr_planned=rr, entry_type="LIMIT",
+            experimental=(direction == "SELL"),
+            reason=f"SMC {bias} · POI · sweep · MSS · RR{rr}",
+            gates={"bias": bias, "bos": bos, "poi_fresh": True, "sweep": True,
+                   "mss": True, "rr": rr, "session": in_sess,
+                   "sweep_extreme": extreme, "entry": entry50},
+        )
+        new_state = SmcState(state.symbol, "MSS_CONFIRMED", {"bias": bias, "poi": poi, "sweep_extreme": extreme, "entry": entry50, "alerted_candle": str(m5.index[-1])})
+        return setup, new_state
+
+
 def demo():
     p = SMC_DEFAULTS
     sess = [[7, 0, 10, 0], [12, 0, 15, 30]]
@@ -304,6 +407,25 @@ def demo():
     ok_ms, entry50, (flo, fhi) = mss_after_sweep(m5b, "bullish", bar, p)
     assert ok_ms and flo < entry50 < fhi, (ok_ms, entry50, flo, fhi)
     print("[OK] sweep-in-POI + MSS pre-sweep swing + 50% FVG")
+
+    # build_plan
+    plan = build_plan("bullish", 3000.0, 2990.0, 0.2, 3030.0, p)
+    assert plan is not None
+    assert plan["sl"] == round(2990.0 - p["sl_spread_mult"] * 0.2, 3)
+    assert abs(plan["rr"] - (30.0 / (3000.0 - plan["sl"]))) < 0.01
+    assert build_plan("bullish", 3000.0, 2990.0, 0.2, 3010.0, p) is None
+    print("[OK] build_plan: sweep-extreme SL + single-TP RR gate")
+
+    # SmcCanonical.evaluate: data flat -> None, IDLE
+    flat = _mk([(100, 100.3, 99.7, 100)] * 80, "1h")
+    b = Bundle("XAUUSD.vx", price=100.0, tf={
+        "H1": flat, "M15": _mk([(100, 100.3, 99.7, 100)] * 80, "15min"),
+        "M5": _mk([(100, 100.3, 99.7, 100)] * 80, "5min")})
+    strat = SmcCanonical()
+    st = SmcState("XAUUSD.vx", "IDLE", {})
+    setup, st = strat.evaluate(b, {}, st)
+    assert setup is None and st.state == "IDLE", (setup, st.state)
+    print("[OK] SmcCanonical.evaluate(flat) -> None, IDLE")
 
 
 if __name__ == "__main__":
