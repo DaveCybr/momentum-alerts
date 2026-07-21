@@ -76,6 +76,25 @@ def bias_alive(df, bias, protected, _bos_idx, p):
     return not bool((closes > protected).any())
 
 
+def dealing_range(df, bias, protected):
+    """§5: anchor = protected -> external extreme impuls BOS. Return (lo, hi)."""
+    if bias == "bullish":
+        return protected, float(df["high"].max())
+    return float(df["low"].min()), protected
+
+
+def pd_zone(price, lo, hi):
+    """premium/discount/equilibrium dari posisi harga di dealing range."""
+    if hi <= lo:
+        return "none"
+    frac = (price - lo) / (hi - lo)
+    if frac < 0.45:
+        return "discount"
+    if frac > 0.55:
+        return "premium"
+    return "equilibrium"
+
+
 def _mk(rows, freq="5min"):
     idx = pd.date_range("2026-01-05 08:00", periods=len(rows), freq=freq, tz="UTC")
     df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
@@ -114,6 +133,15 @@ def demo():
     ba = bias_alive(brok, "bullish", prot, bos_idx, p)
     assert not ba, "should be dead after violation"
     print("[OK] detect_bias + protected veto")
+
+    # dealing_range anchored + pd_zone
+    lo, hi = dealing_range(dfb, "bullish", prot)
+    assert lo == prot, (lo, prot)
+    assert hi >= 104.2
+    assert pd_zone(lo + 0.1 * (hi - lo), lo, hi) == "discount"
+    assert pd_zone(lo + 0.9 * (hi - lo), lo, hi) == "premium"
+    assert pd_zone(lo + 0.5 * (hi - lo), lo, hi) == "equilibrium"
+    print("[OK] dealing_range anchored + pd_zone")
 
 
 if __name__ == "__main__":
