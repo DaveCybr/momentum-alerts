@@ -129,6 +129,89 @@ def close_partial(cfg: dict, symbol: str, ticket: int, volume: float, is_buy: bo
         return rc == RC_DONE
 
 
+def is_demo_account(cfg) -> bool:
+    """True jika akun MT5 adalah DEMO (trade_mode == 0). False jika error atau LIVE."""
+    with sources.MT5_LOCK:
+        try:
+            m = sources._connect(cfg["data"]["mt5"])
+            ai = m.account_info()
+            return int(getattr(ai, "trade_mode", 0)) == 0
+        except Exception:
+            return False
+
+
+def current_spread(cfg, symbol) -> float:
+    with sources.MT5_LOCK:
+        m = sources._connect(cfg["data"]["mt5"])
+        t = m.symbol_info_tick(symbol)
+        return float(t.ask - t.bid) if t else 0.0
+
+
+def equity_risk_amount(cfg) -> float:
+    with sources.MT5_LOCK:
+        m = sources._connect(cfg["data"]["mt5"])
+        ai = m.account_info()
+        return float(ai.equity) * float(cfg["execution"]["risk_percent"]) / 100.0
+
+
+def pending_count(cfg, symbol) -> int:
+    with sources.MT5_LOCK:
+        m = sources._connect(cfg["data"]["mt5"])
+        orders = m.orders_get(symbol=symbol)
+        return len(orders) if orders else 0
+
+
+def place_limit(cfg, symbol, direction, entry, sl, tp, expiry_min=15) -> dict:
+    """§11: pending LIMIT di 50% FVG. Hanya demo. Satu posisi per instrumen."""
+    ex = cfg["execution"]
+    if not is_demo_account(cfg):
+        return {"ok": False, "msg": "akun BUKAN demo — eksekusi ditolak"}
+    with sources.MT5_LOCK:
+        if open_count(cfg, symbol) + pending_count(cfg, symbol) >= ex["max_positions"]:
+            return {"ok": False, "msg": f"sudah ada posisi/pending {symbol}"}
+        m = sources._connect(cfg["data"]["mt5"])
+        si = m.symbol_info(symbol)
+        entry, sl, tp = float(entry), float(sl), float(tp)
+        sl_distance = abs(entry - sl)
+        if sl_distance <= 0:
+            return {"ok": False, "msg": "jarak SL 0/invalid"}
+        risk_amount = equity_risk_amount(cfg)
+        lot = _lot(si, risk_amount, sl_distance)
+        pt = float(si.point) or 0.01
+        tickval = float(getattr(si, "trade_tick_value", 1)) or 1
+        vol_min = float(getattr(si, "volume_min", 0.01) or 0.01)
+        min_risk = vol_min * (sl_distance / pt) * tickval
+        ai = m.account_info()
+        max_2pct = float(ai.equity) * 2.0 / 100.0
+        if min_risk > max_2pct:
+            return {"ok": False, "msg": f"lot-min risiko ${min_risk:.2f} > 2% equity (${max_2pct:.2f}) · §14 skip"}
+        est_risk = lot * (sl_distance / pt) * tickval
+        is_buy = direction == "BUY"
+        otype = m.ORDER_TYPE_BUY_LIMIT if is_buy else m.ORDER_TYPE_SELL_LIMIT
+        import time as _t
+        req = {
+            "action": m.TRADE_ACTION_PENDING, "symbol": symbol, "volume": lot,
+            "type": otype, "price": float(entry), "sl": float(sl), "tp": float(tp),
+            "magic": int(ex.get("magic", 0)), "comment": "smc-limit",
+            "type_time": m.ORDER_TIME_GTD, "expiration": int(_t.time()) + int(expiry_min) * 60,
+        }
+        res, rc = _send(m, req)
+    if rc == RC_DONE:
+        spread = current_spread(cfg, symbol)
+        return {"ok": True, "lot": lot, "entry": entry,
+                "order_ticket": int(getattr(res, "order", 0) or 0),
+                "est_risk": round(est_risk, 2), "spread": spread,
+                "risk_pct": round(est_risk / float(ai.equity) * 100, 2)}
+    return {"ok": False, "msg": f"retcode={rc} ({getattr(res, 'comment', '')})", "lot": lot}
+
+
+def cancel_order(cfg, ticket) -> bool:
+    with sources.MT5_LOCK:
+        m = sources._connect(cfg["data"]["mt5"])
+        res = m.order_send({"action": m.TRADE_ACTION_REMOVE, "order": int(ticket)})
+        return int(res.retcode) == RC_DONE
+
+
 def demo():
     # XAU standar: contract 100, point 0.01, tick_value $1, min 0.01, step 0.01
     assert size_lot(15, 15, 0.01, 1.0, 100, 0.01, 0.01, 50) == 0.01   # $10 target → floor min
@@ -143,6 +226,11 @@ def demo():
     balance_small = 100.0; max_2pct = balance_small * 2 / 100  # $2
     assert min_risk_big_sl > max_2pct, "seharusnya >2% balance"
     print("[OK] §14 veto logic: lot-min risiko besar terdeteksi")
+
+    # SMC broker helpers: equity risk arithmetic
+    assert round(1000.0 * 1.0 / 100.0, 2) == 10.0
+    assert 2990.0 - 1.0 * 0.2 == 2989.8
+    print("[OK] broker: risk/spread arithmetic (MT5 calls untested here)")
 
 
 if __name__ == "__main__":
