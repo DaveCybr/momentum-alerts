@@ -46,7 +46,10 @@ def demo():
     assert next_tick(d(2026, 7, 20, 10, 45, tzinfo=WIB), 30, 5) == d(2026, 7, 20, 11, 0, 5, tzinfo=WIB)
     assert next_tick(d(2026, 7, 20, 10, 0, tzinfo=WIB), 30, 5) == d(2026, 7, 20, 10, 30, 5, tzinfo=WIB)
     assert next_tick(d(2026, 7, 20, 23, 45, tzinfo=WIB), 30, 5) == d(2026, 7, 21, 0, 0, 5, tzinfo=WIB)
-    print("[OK] scheduler next_tick: M30 boundary + rollover benar")
+    # M5 boundary
+    assert next_tick(d(2026, 7, 20, 10, 3, tzinfo=WIB), 5, 5) == d(2026, 7, 20, 10, 5, 5, tzinfo=WIB)
+    assert next_tick(d(2026, 7, 20, 10, 55, tzinfo=WIB), 5, 5) == d(2026, 7, 20, 11, 0, 5, tzinfo=WIB)
+    print("[OK] scheduler next_tick: M30/M5 boundary + rollover benar")
 
 
 if __name__ == "__main__":
