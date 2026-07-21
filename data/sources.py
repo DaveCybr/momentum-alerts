@@ -32,8 +32,17 @@ def _connect(mt5_cfg: dict):
     host = os.getenv(mt5_cfg.get("host_env", "MT5_HOST"), mt5_cfg.get("host", "localhost"))
     port = int(os.getenv(mt5_cfg.get("port_env", "MT5_PORT"), mt5_cfg.get("port", 8001)))
     m = MetaTrader5(host=host, port=port)
-    if not m.initialize():
-        raise RuntimeError(f"MT5 initialize gagal ({host}:{port})")
+    # Pass login credentials jika tersedia (env var). Diperlukan di Wine/mt5linux
+    # karena m.initialize() tanpa arg hang di lingkungan non-interaktif.
+    login_env = os.getenv("MT5_LOGIN")
+    pass_env = os.getenv("MT5_PASSWORD")
+    server_env = os.getenv("MT5_SERVER")
+    if login_env and pass_env and server_env:
+        if not m.initialize(login=int(login_env), password=pass_env, server=server_env):
+            raise RuntimeError(f"MT5 initialize gagal ({host}:{port})")
+    else:
+        if not m.initialize():
+            raise RuntimeError(f"MT5 initialize gagal ({host}:{port})")
     _state["m"] = m
     return m
 
